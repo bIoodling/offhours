@@ -38,13 +38,13 @@ intents.message_content=True
 bot=commands.Bot(command_prefix='?', intents=intents, help_command=None, allowed_mentions=discord.AllowedMentions(everyone=False,roles=False))
 
 CATEGORIES=[
- ('01  ─  INFORMATION',['welcome','rules','verify','announcements']),
- ('02  ─  HIKA',['my-setup','my-gear','live-notifications']),
- ('03  ─  COMMUNITY',['general','media','post-your-setup','clips']),
- ('04  ─  VOICE',['general','gaming','afk']),
- ('05  ─  STAFF',['staff-chat','mod-logs','reports'])]
+ ('01  ✦  INFORMATION',['welcome','rules','verify','announcements']),
+ ('02  ◈  HIKA',['my-setup','my-gear','live-notifications']),
+ ('03  ✧  COMMUNITY',['general','media','post-your-setup','clips']),
+ ('04  ♫  VOICE',['general','gaming','afk']),
+ ('05  ⚑  STAFF',['staff-chat','mod-logs','reports'])]
 COLOURS={'slate':0x8996A6,'silver':0xC6C8CB,'blue':0x829CB7,'lavender':0xA594C1,'sage':0x8BA99C,'rose':0xBA929D}
-ROLE_SPECS=[('owner',0xF0F0F0),('admin',0xB7BDC8),('moderator',0x8B9EAF),('bots',0x777B86),('booster',0xAE95C4),('regular',0x8D8D8D),('pending',0x656565)] + [(f'level {i}',min(0xF0F0F0,0x777777+i*0x010101)) for i in range(5,151,5)] + [(f'colour · {k}',v) for k,v in COLOURS.items()]
+ROLE_SPECS=[('owner',0xD9A2FF),('admin',0xF0A6C5),('moderator',0x80B4ED),('bots',0x9A86D9),('booster',0xE4A0E7),('regular',0x9DA5B8),('pending',0x656565)] + [(f'level {i}',[0xA68CD8,0x6FADCE,0x88BEA3,0xD3AA7A,0xD48FA8,0xC7A1EB][((i//5)-1)%6]) for i in range(5,151,5)] + [(f'colour · {k}',v) for k,v in COLOURS.items()]
 LEVELS=[(i,f'level {i}') for i in range(5,151,5)]
 # XP = 30 * level^2; 750 XP to level 5 (~1-3 hours of active conversation).
 def level(xp): return min(150,math.isqrt(max(0,xp)//30))
@@ -124,6 +124,14 @@ async def on_ready():
     if not getattr(bot,'_initialized',False):
         bot.add_view(VerifyView()); bot.add_view(ColourView()); bot._initialized=True
         if TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET: twitch_check.start()
+        try: await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+        except discord.HTTPException: log.exception('Slash command sync failed')
+        guild=bot.get_guild(GUILD_ID)
+        if guild:
+            owner=guild.get_member(OWNER_ID)
+            if owner:
+                try: await join_panel(owner,test=True)
+                except discord.HTTPException: log.exception('Could not send startup welcome preview')
     log.info('Ready as %s',bot.user)
 
 @bot.event
@@ -320,6 +328,11 @@ async def setup(ctx):
             except discord.HTTPException: pass
         colour_msg=await general.send(embed=discord.Embed(title='choose your colour',description='pick a starter colour below. level 5 replaces it with your earned role.',colour=accent),view=ColourView())
         set_setting(guild.id,'colour_post',colour_msg.id)
+    for role_name,colour in ROLE_SPECS:
+        role=roles[role_name]
+        if role.colour.value!=colour:
+            try: await role.edit(colour=discord.Colour(colour),reason='offhours updated role palette')
+            except discord.Forbidden: log.warning('Cannot recolour role %s',role_name)
     await ctx.send('offhours structure created. Move **owner** to the top and keep the bot role above roles it manages. Disable Maki welcome and XP if using this bot for both. Use ?testwelcome to preview.')
 
 @bot.command(name='say')
@@ -454,6 +467,81 @@ async def twitch_check():
                     await channel.send(f'**hika is live.**\nhttps://twitch.tv/{TWITCH_LOGIN}')
                 _twitch_was_live=live
     except Exception: log.exception('Twitch check failed')
+
+
+# Slash commands are registered per guild so updates appear promptly.
+from discord import app_commands
+
+@bot.tree.command(name='rank',description='View your XP, level and next milestone',guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(member='Optional member to inspect')
+async def slash_rank(interaction:discord.Interaction,member:discord.Member=None):
+    target=member or interaction.user
+    xp=member_xp(interaction.guild_id,target.id); lvl=level(xp)
+    next_xp=xp_for_level(min(150,lvl+1))
+    em=discord.Embed(title=f'rank / {target.display_name}',description=f'**level {lvl}** · {xp:,} XP'+(f'\\n{max(0,next_xp-xp):,} XP to next level' if lvl<150 else '\\nmaximum level reached'),colour=0xA68CD8)
+    em.set_thumbnail(url=target.display_avatar.url)
+    await interaction.response.send_message(embed=em)
+
+@bot.tree.command(name='leaderboard',description='Top members by experience',guild=discord.Object(id=GUILD_ID))
+async def slash_leaderboard(interaction:discord.Interaction):
+    rows=con.execute('SELECT user,xp FROM xp WHERE guild=? ORDER BY xp DESC LIMIT 10',(interaction.guild_id,)).fetchall()
+    msg='\\n'.join(f'**{i}.** <@{u}> · level {level(x)} · {x:,} XP' for i,(u,x) in enumerate(rows,1)) or 'No XP earned yet.'
+    await interaction.response.send_message(embed=discord.Embed(title='offhours / leaderboard',description=msg,colour=0xA68CD8))
+
+@bot.tree.command(name='server-audit',description='Check roles, channels, and bot permissions safely',guild=discord.Object(id=GUILD_ID))
+@app_commands.default_permissions(manage_guild=True)
+async def slash_audit(interaction:discord.Interaction):
+    if interaction.user.id!=OWNER_ID and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message('Staff only.',ephemeral=True)
+    guild=interaction.guild; me=guild.me; perms=me.guild_permissions
+    required={'Manage Roles':perms.manage_roles,'Manage Channels':perms.manage_channels,'Manage Messages':perms.manage_messages,'Read Message History':perms.read_message_history,'Add Reactions':perms.add_reactions,'Embed Links':perms.embed_links,'Moderate Members':perms.moderate_members}
+    lines=[('✅' if ok else '❌')+' '+name for name,ok in required.items()]
+    for name in ('welcome','rules','verify','general','media','post-your-setup','mod-logs'):
+        ch=discord.utils.get(guild.text_channels,name=name)
+        lines.append(('✅' if ch else '❌')+' #'+name)
+    member=discord.utils.get(guild.roles,name='regular')
+    lines.append(('✅' if member and member.position<me.top_role.position else '❌')+' role hierarchy')
+    lines.append('ℹ️ External member tests: not performed')
+    lines.append('ℹ️ Discord Community setup: manual')
+    em=discord.Embed(title='offhours / server audit',description='\\n'.join(lines),colour=0xA68CD8)
+    await interaction.response.send_message(embed=em,ephemeral=True)
+    logch=discord.utils.get(guild.text_channels,name='mod-logs')
+    if logch:
+        await logch.send(f'{interaction.user.mention} completed a safe server audit. Review the private results.',allowed_mentions=discord.AllowedMentions(users=[interaction.user]))
+
+@bot.tree.command(name='test-welcome',description='Preview the member join notification',guild=discord.Object(id=GUILD_ID))
+@app_commands.default_permissions(manage_guild=True)
+async def slash_test_welcome(interaction:discord.Interaction):
+    if interaction.user.id!=OWNER_ID:return await interaction.response.send_message('Owner only.',ephemeral=True)
+    await join_panel(interaction.user,test=True)
+    await interaction.response.send_message('Join preview posted in #welcome.',ephemeral=True)
+
+@bot.tree.command(name='colour',description='Show the starter role colour selector',guild=discord.Object(id=GUILD_ID))
+async def slash_colour(interaction:discord.Interaction):
+    await interaction.response.send_message('Choose a starter colour below (available before level 5).',view=ColourView(),ephemeral=True)
+
+@bot.tree.command(name='announce',description='Post an announcement as offhours',guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(channel='Destination channel',message='Message to post')
+@app_commands.default_permissions(manage_guild=True)
+async def slash_announce(interaction:discord.Interaction,channel:discord.TextChannel,message:str):
+    if interaction.user.id!=OWNER_ID:return await interaction.response.send_message('Owner only.',ephemeral=True)
+    if len(message)>1900:return await interaction.response.send_message('Message too long.',ephemeral=True)
+    await channel.send(message,allowed_mentions=discord.AllowedMentions.none())
+    await interaction.response.send_message(f'Posted in {channel.mention}.',ephemeral=True)
+
+@bot.command(name='mute')
+@staff_only()
+async def mute(ctx,member:discord.Member,minutes:int=10,*,reason:str='No reason provided'):
+    if not 1<=minutes<=40320:return await ctx.reply('Choose 1–40320 minutes.')
+    await member.timeout(discord.utils.utcnow()+__import__('datetime').timedelta(minutes=minutes),reason=reason)
+    await ctx.reply(f'Muted {member.mention} for {minutes} minutes.')
+
+@bot.command(name='unmute')
+@staff_only()
+async def unmute(ctx,member:discord.Member):
+    await member.timeout(None,reason=f'Unmuted by {ctx.author}')
+    await ctx.reply(f'Unmuted {member.mention}.')
+
 
 if __name__=='__main__':
     if not TOKEN or TOKEN=='PASTE_YOUR_PRIVATE_BOT_TOKEN_HERE' or not GUILD_ID or not OWNER_ID:
