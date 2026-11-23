@@ -44,7 +44,7 @@ CATEGORIES=[
  ('04  VOICE',['general','gaming','afk']),
  ('05  STAFF',['staff-chat','mod-logs','reports'])]
 COLOURS={'slate':0x8996A6,'silver':0xC6C8CB,'blue':0x829CB7,'lavender':0xA594C1,'sage':0x8BA99C,'rose':0xBA929D}
-ROLE_SPECS=[('owner',0xD9A2FF),('admin',0xF0A6C5),('moderator',0x80B4ED),('bots',0x9A86D9),('booster',0xE4A0E7),('regular',0x9DA5B8),('pending',0x656565)] + [(f'level {i}',[0xA68CD8,0x6FADCE,0x88BEA3,0xD3AA7A,0xD48FA8,0xC7A1EB][((i//5)-1)%6]) for i in range(5,151,5)] + [(f'colour · {k}',v) for k,v in COLOURS.items()]
+ROLE_SPECS=[('owner',0xF5F5F5),('admin',0xC8C8C8),('moderator',0xA8A8A8),('bots',0x7C7C7C),('booster',0xDADADA),('regular',0x999999),('pending',0x656565)] + [(f'level {i}',[0xE5E5E5,0x6FADCE,0x88BEA3,0xD3AA7A,0xD48FA8,0xC7A1EB][((i//5)-1)%6]) for i in range(5,151,5)] + [(f'colour · {k}',v) for k,v in COLOURS.items()]
 LEVELS=[(i,f'level {i}') for i in range(5,151,5)]
 # XP = 30 * level^2; 750 XP to level 5 (~1-3 hours of active conversation).
 def level(xp): return min(150,math.isqrt(max(0,xp)//30))
@@ -107,7 +107,7 @@ def member_level(g,u): return level(member_xp(g,u))
 async def level_panel(member,lvl):
     ch=discord.utils.get(member.guild.text_channels,name='welcome')
     if not ch:return
-    em=discord.Embed(title='level up  /  '+str(lvl),description=f'{member.mention} reached **level {lvl}**.',colour=0xA68CD8)
+    em=discord.Embed(title='level up  /  '+str(lvl),description=f'{member.mention} reached **level {lvl}**.',colour=0xE5E5E5)
     em.set_thumbnail(url=member.display_avatar.url)
     await ch.send(embed=em,allowed_mentions=discord.AllowedMentions(users=[member]))
 async def join_panel(member,test=False):
@@ -115,7 +115,7 @@ async def join_panel(member,test=False):
     if not ch:return
     rules=discord.utils.get(member.guild.text_channels,name='rules')
     destination=rules.mention if rules else '#rules'
-    em=discord.Embed(title='join notifier  /  test' if test else 'welcome to offhours',description=f'{member.mention}  ·  member #{member.guild.member_count}\n\nstart in {destination}',colour=0xA68CD8)
+    em=discord.Embed(title='join notifier  /  test' if test else 'welcome to offhours',description=f'{member.mention}  ·  member #{member.guild.member_count}\n\nstart in {destination}',colour=0xE5E5E5)
     em.set_thumbnail(url=member.display_avatar.url)
     if WELCOME_BANNER_URL.startswith('https://'):em.set_image(url=WELCOME_BANNER_URL)
     await ch.send(embed=em,allowed_mentions=discord.AllowedMentions(users=[member]))
@@ -255,7 +255,6 @@ async def update_server_icon(guild):
 async def setup(ctx):
     if not owner_only(ctx): return await ctx.reply('Only the configured owner can run this.')
     guild=ctx.guild
-    await update_server_icon(guild)
     await ctx.reply('Setting up offhours. This can take a minute…')
     # Keep all existing channel names and IDs; no automatic renaming or deletion.
     # Migrate only channels created by earlier offhours versions, preserving IDs and history.
@@ -522,7 +521,7 @@ async def slash_rank(interaction:discord.Interaction,member:discord.Member=None)
     target=member or interaction.user
     xp=member_xp(interaction.guild_id,target.id); lvl=level(xp)
     next_xp=xp_for_level(min(150,lvl+1))
-    em=discord.Embed(title=f'rank / {target.display_name}',description=f'**level {lvl}** · {xp:,} XP'+(f'\\n{max(0,next_xp-xp):,} XP to next level' if lvl<150 else '\\nmaximum level reached'),colour=0xA68CD8)
+    em=discord.Embed(title=f'rank / {target.display_name}',description=f'**level {lvl}** · {xp:,} XP'+(f'\\n{max(0,next_xp-xp):,} XP to next level' if lvl<150 else '\\nmaximum level reached'),colour=0xE5E5E5)
     em.set_thumbnail(url=target.display_avatar.url)
     await interaction.response.send_message(embed=em)
 
@@ -530,7 +529,7 @@ async def slash_rank(interaction:discord.Interaction,member:discord.Member=None)
 async def slash_leaderboard(interaction:discord.Interaction):
     rows=con.execute('SELECT user,xp FROM xp WHERE guild=? ORDER BY xp DESC LIMIT 10',(interaction.guild_id,)).fetchall()
     msg='\\n'.join(f'**{i}.** <@{u}> · level {level(x)} · {x:,} XP' for i,(u,x) in enumerate(rows,1)) or 'No XP earned yet.'
-    await interaction.response.send_message(embed=discord.Embed(title='offhours / leaderboard',description=msg,colour=0xA68CD8))
+    await interaction.response.send_message(embed=discord.Embed(title='offhours / leaderboard',description=msg,colour=0xE5E5E5))
 
 @bot.tree.command(name='server-audit',description='Check roles, channels, and bot permissions safely',guild=discord.Object(id=GUILD_ID))
 @app_commands.default_permissions(manage_guild=True)
@@ -547,7 +546,7 @@ async def slash_audit(interaction:discord.Interaction):
     lines.append(('✅' if member and member.position<me.top_role.position else '❌')+' role hierarchy')
     lines.append('ℹ️ External member tests: not performed')
     lines.append('ℹ️ Discord Community setup: manual')
-    em=discord.Embed(title='offhours / server audit',description='\\n'.join(lines),colour=0xA68CD8)
+    em=discord.Embed(title='offhours / server audit',description='\\n'.join(lines),colour=0xE5E5E5)
     await interaction.response.send_message(embed=em,ephemeral=True)
     logch=discord.utils.get(guild.text_channels,name='mod-logs')
     if logch:
@@ -614,7 +613,7 @@ async def startup_audit(guild):
     checks['community enabled']='COMMUNITY' in [str(f).upper() for f in guild.features]
     result='\\n'.join(('✅' if ok else '❌')+' '+name for name,ok in checks.items())
     result+='\\n\\n*Read-only checks only; no fake member spam, real ban, or destructive permission tests.*'
-    em=discord.Embed(title='offhours / startup audit',description=result[:4000],colour=0xA68CD8)
+    em=discord.Embed(title='offhours / startup audit',description=result[:4000],colour=0xE5E5E5)
     owner=guild.get_member(OWNER_ID)
     mention=owner.mention if owner else ''
     await channel.send(content=mention,embed=em,allowed_mentions=discord.AllowedMentions(users=[owner] if owner else []))
@@ -633,25 +632,207 @@ async def setup_check(interaction:discord.Interaction):
         f'Announcements channel: {announcements.mention if announcements else "missing"}\\n\\n'
         'Discord requires the owner to enable Community in Server Settings. '
         'After that, choose your rules channel and announcement channel in the Community settings.'
-    ),colour=0xA68CD8)
+    ),colour=0xE5E5E5)
     await interaction.response.send_message(embed=em,ephemeral=True)
 
-@bot.tree.command(name='music',description='Level 50+ music access and supported-source guidance',guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(link='YouTube, SoundCloud or Spotify song/playlist URL')
-async def slash_music(interaction:discord.Interaction,link:str):
+
+# Optional audio dependencies: pip install yt-dlp PyNaCl
+# ffmpeg must be installed and available on PATH. Spotify URLs are metadata-only;
+# direct Spotify audio extraction is not supported.
+import shutil
+from collections import deque
+try:
+    import yt_dlp
+except ImportError:
+    yt_dlp = None
+
+MUSIC_STATES = {}
+class MusicState:
+    def __init__(self):
+        self.queue=deque()
+        self.history=deque(maxlen=30)
+        self.current=None
+        self.loop=False
+        self.lock=asyncio.Lock()
+
+def music_state(guild_id):
+    return MUSIC_STATES.setdefault(guild_id, MusicState())
+
+def music_allowed(interaction):
+    m=interaction.user
+    return isinstance(m,discord.Member) and (m.id==OWNER_ID or member_level(interaction.guild_id,m.id)>=50)
+
+def music_voice(interaction):
     member=interaction.user
-    if not isinstance(member,discord.Member):
-        return await interaction.response.send_message('Server members only.',ephemeral=True)
-    if member_level(interaction.guild_id,member.id)<50 and member.id!=OWNER_ID:
-        return await interaction.response.send_message('Music unlocks at level 50.',ephemeral=True)
-    if not member.voice or member.voice.channel.name not in ('general','afk'):
-        return await interaction.response.send_message('Join the general or afk voice channel first.',ephemeral=True)
-    if not re.match(r'^https://(www\\.)?(youtube\\.com|youtu\\.be|soundcloud\\.com|open\\.spotify\\.com)/',link,re.I):
-        return await interaction.response.send_message('Use a supported YouTube, SoundCloud or Spotify URL.',ephemeral=True)
-    await interaction.response.send_message(
-        'Music playback is not installed yet. The link was validated, but nothing has been queued or played. '
-        'Spotify links require separate metadata resolution and an authorised audio source.',
-        ephemeral=True)
+    return member.voice.channel if isinstance(member,discord.Member) and member.voice and member.voice.channel.name in ('general','afk') else None
+
+def extract_tracks(url):
+    if yt_dlp is None: raise RuntimeError('yt-dlp is not installed.')
+    opts={'quiet':True,'no_warnings':True,'extract_flat':'in_playlist','noplaylist':False,'playlistend':50,'skip_download':True,'default_search':'error'}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info=ydl.extract_info(url,download=False)
+    if not info: raise RuntimeError('No playable tracks were found.')
+    entries=info.get('entries') or [info]
+    tracks=[]
+    for entry in entries:
+        if not entry:continue
+        link=entry.get('webpage_url') or entry.get('url')
+        if link and not str(link).startswith('http') and entry.get('id'):
+            link='https://www.youtube.com/watch?v='+entry['id']
+        if link and str(link).startswith('http'):
+            tracks.append({'title':entry.get('title') or 'Unknown track','url':link})
+    return tracks[:50]
+
+def resolve_audio(url):
+    with yt_dlp.YoutubeDL({'quiet':True,'no_warnings':True,'format':'bestaudio/best','noplaylist':True}) as ydl:
+        info=ydl.extract_info(url,download=False)
+    if not info or not info.get('url'):raise RuntimeError('Audio source could not be resolved.')
+    return info['url'], info.get('title','Unknown track')
+
+async def play_next(guild):
+    state=music_state(guild.id)
+    voice=guild.voice_client
+    if not voice or not voice.is_connected():return
+    async with state.lock:
+        if state.loop and state.current:
+            track=state.current
+        elif state.queue:
+            track=state.queue.popleft()
+            state.current=track
+            state.history.append(track)
+        else:
+            state.current=None
+            return
+    try:
+        audio,title=await asyncio.to_thread(resolve_audio,track['url'])
+        state.current['title']=title
+        source=discord.FFmpegPCMAudio(audio,before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',options='-vn')
+        def finished(error):
+            if error:log.error('Audio playback error: %s',error)
+            asyncio.run_coroutine_threadsafe(play_next(guild),bot.loop)
+        voice.play(source,after=finished)
+    except Exception:
+        log.exception('Failed to play music track')
+        state.loop=False
+        await play_next(guild)
+
+class MusicControls(discord.ui.View):
+    def __init__(self,guild_id):
+        super().__init__(timeout=3600)
+        self.guild_id=guild_id
+    async def gate(self,interaction):
+        if not music_allowed(interaction) or not music_voice(interaction):
+            await interaction.response.send_message('Level 50+ and general/afk voice required.',ephemeral=True)
+            return False
+        return True
+    @discord.ui.button(label='Pause / Resume',style=discord.ButtonStyle.secondary)
+    async def pause(self,interaction:discord.Interaction,button:discord.ui.Button):
+        if not await self.gate(interaction):return
+        vc=interaction.guild.voice_client
+        if not vc:return await interaction.response.send_message('Nothing playing.',ephemeral=True)
+        if vc.is_paused():vc.resume()
+        elif vc.is_playing():vc.pause()
+        await interaction.response.send_message('Playback toggled.',ephemeral=True)
+    @discord.ui.button(label='Skip',style=discord.ButtonStyle.secondary)
+    async def skip(self,interaction:discord.Interaction,button:discord.ui.Button):
+        if not await self.gate(interaction):return
+        vc=interaction.guild.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            music_state(interaction.guild_id).loop=False
+            vc.stop()
+        await interaction.response.send_message('Skipped.',ephemeral=True)
+    @discord.ui.button(label='Loop',style=discord.ButtonStyle.secondary)
+    async def loop(self,interaction:discord.Interaction,button:discord.ui.Button):
+        if not await self.gate(interaction):return
+        state=music_state(interaction.guild_id)
+        state.loop=not state.loop
+        await interaction.response.send_message('Loop '+('on' if state.loop else 'off'),ephemeral=True)
+    @discord.ui.button(label='Previous',style=discord.ButtonStyle.secondary)
+    async def previous(self,interaction:discord.Interaction,button:discord.ui.Button):
+        if not await self.gate(interaction):return
+        state=music_state(interaction.guild_id)
+        if len(state.history)<2:return await interaction.response.send_message('No previous track.',ephemeral=True)
+        state.history.pop()
+        track=state.history.pop()
+        state.queue.appendleft(track)
+        state.loop=False
+        vc=interaction.guild.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):vc.stop()
+        elif vc:await play_next(interaction.guild)
+        await interaction.response.send_message('Previous track queued.',ephemeral=True)
+    @discord.ui.button(label='Stop',style=discord.ButtonStyle.danger)
+    async def stop(self,interaction:discord.Interaction,button:discord.ui.Button):
+        if not await self.gate(interaction):return
+        state=music_state(interaction.guild_id)
+        state.queue.clear();state.loop=False;state.current=None
+        if interaction.guild.voice_client:await interaction.guild.voice_client.disconnect(force=True)
+        await interaction.response.send_message('Player stopped.',ephemeral=True)
+
+@bot.tree.command(name='music',description='Play a song or playlist in general/afk voice (level 50+)',guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(link='YouTube or SoundCloud song/playlist URL')
+async def slash_music(interaction:discord.Interaction,link:str):
+    if not music_allowed(interaction):return await interaction.response.send_message('Music unlocks at level 50.',ephemeral=True)
+    channel=music_voice(interaction)
+    if not channel:return await interaction.response.send_message('Join general or afk voice first.',ephemeral=True)
+    if not re.match(r'^https://(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com|soundcloud\.com)/',link,re.I):
+        return await interaction.response.send_message('Use a YouTube or SoundCloud link. Spotify streams cannot be extracted directly.',ephemeral=True)
+    if not yt_dlp or not shutil.which('ffmpeg'):
+        return await interaction.response.send_message('Install yt-dlp, PyNaCl and FFmpeg on the host to enable audio.',ephemeral=True)
+    await interaction.response.defer(ephemeral=True,thinking=True)
+    try:
+        tracks=await asyncio.to_thread(extract_tracks,link)
+        if not tracks:raise RuntimeError('No tracks found.')
+        vc=interaction.guild.voice_client
+        if vc and vc.channel!=channel:await vc.move_to(channel)
+        elif not vc:vc=await channel.connect()
+        state=music_state(interaction.guild_id)
+        state.queue.extend(tracks)
+        if not vc.is_playing() and not vc.is_paused():await play_next(interaction.guild)
+        em=discord.Embed(title='offhours / music',description=f'Queued **{len(tracks)}** track(s).\nUse the controls below.',colour=0xE5E5E5)
+        await channel.send(embed=em,view=MusicControls(interaction.guild_id))
+        await interaction.followup.send('Queued '+str(len(tracks))+' track(s).',ephemeral=True)
+    except Exception as exc:
+        log.exception('Music request failed')
+        await interaction.followup.send('Music failed: '+str(exc)[:300],ephemeral=True)
+
+@bot.tree.command(name='test-safety',description='Run non-destructive moderation and permission diagnostics',guild=discord.Object(id=GUILD_ID))
+@app_commands.default_permissions(administrator=True)
+async def test_safety(interaction:discord.Interaction):
+    if interaction.user.id!=OWNER_ID:return await interaction.response.send_message('Owner only.',ephemeral=True)
+    await interaction.response.defer(ephemeral=True,thinking=True)
+    guild=interaction.guild
+    me=guild.me
+    checks=[]
+    def check(label,passed):
+        checks.append((label,bool(passed)))
+    perms=me.guild_permissions
+    for key in ('manage_messages','manage_roles','manage_channels','moderate_members','ban_members','kick_members','embed_links','add_reactions','read_message_history','connect','speak'):
+        check('bot permission: '+key,getattr(perms,key,False))
+    regular=discord.utils.get(guild.roles,name='regular')
+    pending=discord.utils.get(guild.roles,name='pending')
+    check('regular role assignable',bool(regular and me.top_role>regular))
+    check('pending role assignable',bool(pending and me.top_role>pending))
+    for name in ('welcome','rules','verify','general','media','post-your-setup','mod-logs'):
+        ch=discord.utils.get(guild.text_channels,name=name)
+        check('channel #'+name,bool(ch))
+        if ch:
+            p=ch.permissions_for(me)
+            check('send in #'+name,p.send_messages)
+            check('embed in #'+name,p.embed_links)
+            check('react in #'+name,p.add_reactions)
+    check('link detector',bool(link_re.search('https://example.com')))
+    check('link non-match',not bool(link_re.search('ordinary message')))
+    check('XP progression',xp_for_level(6)>xp_for_level(5)>xp_for_level(4))
+    check('level cap',level(xp_for_level(150)+50000)==150)
+    check('music dependencies',bool(yt_dlp and shutil.which('ffmpeg')))
+    failed=[label for label,passed in checks if not passed]
+    em=discord.Embed(title='offhours / safety diagnostics',description='\n'.join(('PASS' if ok else 'FAIL')+'  '+label for label,ok in checks)[:3900],colour=0xE5E5E5)
+    em.add_field(name='Summary',value=f'{len(checks)-len(failed)}/{len(checks)} checks passed')
+    em.set_footer(text='Read-only checks. No real spam, bans, deleted messages, or role changes.')
+    log_ch=discord.utils.get(guild.text_channels,name='mod-logs') or discord.utils.get(guild.text_channels,name='staff-chat')
+    if log_ch:
+        await log_ch.send(content=f'<@{OWNER_ID}>  safety test complete — {len(failed)} issue(s)',embed=em,allowed_mentions=discord.AllowedMentions(users=True))
+    await interaction.followup.send('Safety diagnostics finished. '+str(len(failed))+' issues. Check staff logs.',ephemeral=True)
 
 
 if __name__=='__main__':
