@@ -1,4 +1,4 @@
-import os, asyncio, logging, sqlite3, time, re, random, math, io
+import os, asyncio, logging, sqlite3, time, re, random, math, io, datetime
 from pathlib import Path
 import aiohttp
 import discord
@@ -109,7 +109,7 @@ async def level_panel(member,lvl):
     if not ch:return
     em=discord.Embed(title='level up  /  '+str(lvl),description=f'{member.mention} reached **level {lvl}**.',colour=0xE5E5E5)
     em.set_thumbnail(url=member.display_avatar.url)
-    await ch.send(embed=em,allowed_mentions=discord.AllowedMentions(users=[member]))
+    await ch.send(embed=em,allowed_mentions=discord.AllowedMentions(users=[member]),silent=True)
 async def join_panel(member,test=False):
     ch=discord.utils.get(member.guild.text_channels,name='welcome')
     if not ch:return
@@ -122,7 +122,7 @@ async def join_panel(member,test=False):
 @bot.event
 async def on_ready():
     if not getattr(bot,'_initialized',False):
-        bot.add_view(VerifyView()); bot.add_view(ColourView()); bot._initialized=True
+        bot.add_view(VerifyView()); bot.add_view(ColourView()); bot.add_view(RegionView()); bot._initialized=True
         if TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET: twitch_check.start()
         try: await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
         except discord.HTTPException: log.exception('Slash command sync failed')
@@ -256,7 +256,7 @@ async def setup(ctx):
     if not owner_only(ctx): return await ctx.reply('Only the configured owner can run this.')
     guild=ctx.guild
     await ctx.reply('Setting up offhours. This can take a minute…')
-    # Keep all existing channel names and IDs; no automatic renaming or deletion.
+    # Preserve all existing channel IDs and category names; only a few information channel names get subtle symbols.
     # Migrate only channels created by earlier offhours versions, preserving IDs and history.
     renames = {
         '✦・welcome':'welcome', '✓・verify':'verify', '◈・announcements':'announcements',
@@ -275,6 +275,8 @@ async def setup(ctx):
         await old_commands.delete(reason='offhours simplified layout')
     roles={}
     for name,color in ROLE_SPECS: roles[name]=await ensure_role(guild,name,color)
+    for region in ('europe','north america','south america','asia','africa','oceania'):
+        await ensure_role(guild,'region · '+region,0x8898A8)
     # Role ordering is constrained by Discord's role hierarchy. Adjust owner/bot ordering manually after setup.
     await guild.me.add_roles(roles['bots'],reason='offhours bot grouping')
     owner=guild.get_member(OWNER_ID)
@@ -416,7 +418,8 @@ async def testwelcome(ctx):
 @commands.guild_only()
 async def purge(ctx,amount:int):
     if not 1<=amount<=100: return await ctx.reply('Use `?purge 1` to `?purge 100`.')
-    deleted=await ctx.channel.purge(limit=amount+1)
+    cutoff=discord.utils.utcnow()-datetime.timedelta(days=7)
+    deleted=await ctx.channel.purge(limit=amount+1,after=cutoff)
     await log_action(ctx.guild,f'purge: {ctx.author.mention} removed {len(deleted)-1} messages in {ctx.channel.mention}')
 
 @bot.command(name='warn')
@@ -561,7 +564,7 @@ async def slash_audit(interaction:discord.Interaction):
     await interaction.response.send_message(embed=em,ephemeral=True)
     logch=discord.utils.get(guild.text_channels,name='mod-logs')
     if logch:
-        await logch.send(f'{interaction.user.mention} completed a safe server audit. Review the private results.',allowed_mentions=discord.AllowedMentions(users=[interaction.user]))
+        await logch.send(f'{interaction.user.mention} completed a safe server audit. Review the private results.',allowed_mentions=discord.AllowedMentions(users=[interaction.user]),silent=True)
 
 @bot.tree.command(name='test-welcome',description='Preview the member join notification',guild=discord.Object(id=GUILD_ID))
 @app_commands.default_permissions(manage_guild=True)
@@ -627,7 +630,7 @@ async def startup_audit(guild):
     em=discord.Embed(title='offhours / startup audit',description=result[:4000],colour=0xE5E5E5)
     owner=guild.get_member(OWNER_ID)
     mention=owner.mention if owner else ''
-    await channel.send(content=mention,embed=em,allowed_mentions=discord.AllowedMentions(users=[owner] if owner else []))
+    await channel.send(content=mention,embed=em,allowed_mentions=discord.AllowedMentions(users=[owner] if owner else []),silent=True)
 
 @bot.tree.command(name='setup-check',description='Inspect Community readiness and channel permissions',guild=discord.Object(id=GUILD_ID))
 @app_commands.default_permissions(manage_guild=True)
@@ -779,7 +782,7 @@ class MusicControls(discord.ui.View):
         if interaction.guild.voice_client:await interaction.guild.voice_client.disconnect(force=True)
         await interaction.response.send_message('Player stopped.',ephemeral=True)
 
-@bot.tree.command(name='music',description='Play a song or playlist in general/afk voice (level 50+)',guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name='play',description='Play a song or playlist in general/afk voice (level 50+)',guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(link='YouTube or SoundCloud song/playlist URL')
 async def slash_music(interaction:discord.Interaction,link:str):
     if not music_allowed(interaction):return await interaction.response.send_message('Music unlocks at level 50.',ephemeral=True)
@@ -806,7 +809,7 @@ async def slash_music(interaction:discord.Interaction,link:str):
         log.exception('Music request failed')
         await interaction.followup.send('Music failed: '+str(exc)[:300],ephemeral=True)
 
-@bot.tree.command(name='test-safety',description='Run non-destructive moderation and permission diagnostics',guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name='safety-check',description='Run non-destructive moderation and permission diagnostics',guild=discord.Object(id=GUILD_ID))
 @app_commands.default_permissions(administrator=True)
 async def test_safety(interaction:discord.Interaction):
     if interaction.user.id!=OWNER_ID:return await interaction.response.send_message('Owner only.',ephemeral=True)
@@ -864,6 +867,58 @@ async def test_safety(interaction:discord.Interaction):
         file=discord.File(io.BytesIO(payload),filename='readme.txt'),
         ephemeral=True
     )
+
+
+class RegionSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(placeholder='choose your region',min_values=1,max_values=1,
+            options=[discord.SelectOption(label=x.title(),value=x) for x in ('europe','north america','south america','asia','africa','oceania')],
+            custom_id='offhours:region:select')
+    async def callback(self,interaction:discord.Interaction):
+        if not isinstance(interaction.user,discord.Member):
+            return await interaction.response.send_message('Members only.',ephemeral=True)
+        member=interaction.user
+        if not discord.utils.get(member.roles,name='regular'):
+            return await interaction.response.send_message('Verify first.',ephemeral=True)
+        new=discord.utils.get(interaction.guild.roles,name='region · '+self.values[0])
+        if not new:
+            return await interaction.response.send_message('Run ?setup to create region roles.',ephemeral=True)
+        old=[role for role in member.roles if role.name.startswith('region · ')]
+        try:
+            if old: await member.remove_roles(*old,reason='Region selection')
+            await member.add_roles(new,reason='Region selection')
+            await interaction.response.send_message('Region updated.',ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message('Bot role must be above region roles.',ephemeral=True)
+
+class RegionView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(RegionSelect())
+
+@bot.tree.command(name='region',description='Choose your region role',guild=discord.Object(id=GUILD_ID))
+async def slash_region(interaction:discord.Interaction):
+    await interaction.response.send_message('Choose your region.',view=RegionView(),ephemeral=True)
+
+@bot.tree.command(name='ban',description='Ban a member by user ID or username',guild=discord.Object(id=GUILD_ID))
+@app_commands.default_permissions(ban_members=True)
+async def slash_ban(interaction:discord.Interaction,user:str,reason:str='No reason provided'):
+    if not interaction.user.guild_permissions.ban_members:
+        return await interaction.response.send_message('Ban Members permission required.',ephemeral=True)
+    target=discord.utils.get(interaction.guild.members,name=user) or discord.utils.get(interaction.guild.members,display_name=user)
+    if target is None:
+        user_id=user.strip().strip('<@!>')
+        if not user_id.isdecimal():
+            return await interaction.response.send_message('Use a member mention or numeric user ID.',ephemeral=True)
+        target=await bot.fetch_user(int(user_id))
+    if target.id==OWNER_ID or target.id==interaction.user.id:
+        return await interaction.response.send_message('Cannot ban that user.',ephemeral=True)
+    try:
+        await interaction.guild.ban(target,reason=reason[:400],delete_message_seconds=0)
+        await interaction.response.send_message('Banned '+str(target),ephemeral=True)
+        await log_action(interaction.guild,'ban: '+str(target.id)+' by '+str(interaction.user.id))
+    except discord.HTTPException:
+        await interaction.response.send_message('Ban failed. Check role hierarchy and permissions.',ephemeral=True)
 
 
 if __name__=='__main__':
