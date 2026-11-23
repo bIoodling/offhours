@@ -38,11 +38,11 @@ intents.message_content=True
 bot=commands.Bot(command_prefix='?', intents=intents, help_command=None, allowed_mentions=discord.AllowedMentions(everyone=False,roles=False))
 
 CATEGORIES=[
- ('01  ✦  INFORMATION',['welcome','rules','verify','announcements']),
- ('02  ◈  HIKA',['my-setup','my-gear','live-notifications']),
- ('03  ✧  COMMUNITY',['general','media','post-your-setup','clips']),
- ('04  ♫  VOICE',['general','gaming','afk']),
- ('05  ⚑  STAFF',['staff-chat','mod-logs','reports'])]
+ ('01  INFORMATION',['welcome','rules','verify','announcements']),
+ ('02  HIKA',['my-setup','my-gear','live-notifications']),
+ ('03  COMMUNITY',['general','media','post-your-setup','clips']),
+ ('04  VOICE',['general','gaming','afk']),
+ ('05  STAFF',['staff-chat','mod-logs','reports'])]
 COLOURS={'slate':0x8996A6,'silver':0xC6C8CB,'blue':0x829CB7,'lavender':0xA594C1,'sage':0x8BA99C,'rose':0xBA929D}
 ROLE_SPECS=[('owner',0xD9A2FF),('admin',0xF0A6C5),('moderator',0x80B4ED),('bots',0x9A86D9),('booster',0xE4A0E7),('regular',0x9DA5B8),('pending',0x656565)] + [(f'level {i}',[0xA68CD8,0x6FADCE,0x88BEA3,0xD3AA7A,0xD48FA8,0xC7A1EB][((i//5)-1)%6]) for i in range(5,151,5)] + [(f'colour · {k}',v) for k,v in COLOURS.items()]
 LEVELS=[(i,f'level {i}') for i in range(5,151,5)]
@@ -107,7 +107,7 @@ def member_level(g,u): return level(member_xp(g,u))
 async def level_panel(member,lvl):
     ch=discord.utils.get(member.guild.text_channels,name='welcome')
     if not ch:return
-    em=discord.Embed(title='level up  /  '+str(lvl),description=f'{member.mention} reached **level {lvl}**.',colour=0xDADADA)
+    em=discord.Embed(title='level up  /  '+str(lvl),description=f'{member.mention} reached **level {lvl}**.',colour=0xA68CD8)
     em.set_thumbnail(url=member.display_avatar.url)
     await ch.send(embed=em,allowed_mentions=discord.AllowedMentions(users=[member]))
 async def join_panel(member,test=False):
@@ -115,7 +115,7 @@ async def join_panel(member,test=False):
     if not ch:return
     rules=discord.utils.get(member.guild.text_channels,name='rules')
     destination=rules.mention if rules else '#rules'
-    em=discord.Embed(title='welcome to offhours',description=f'{member.mention}  ·  member #{member.guild.member_count}\n\nstart in {destination}',colour=0xE4E4E4)
+    em=discord.Embed(title='join notifier  /  test' if test else 'welcome to offhours',description=f'{member.mention}  ·  member #{member.guild.member_count}\n\nstart in {destination}',colour=0xA68CD8)
     em.set_thumbnail(url=member.display_avatar.url)
     if WELCOME_BANNER_URL.startswith('https://'):em.set_image(url=WELCOME_BANNER_URL)
     await ch.send(embed=em,allowed_mentions=discord.AllowedMentions(users=[member]))
@@ -132,6 +132,8 @@ async def on_ready():
             if owner:
                 try: await join_panel(owner,test=True)
                 except discord.HTTPException: log.exception('Could not send startup welcome preview')
+            try: await startup_audit(guild)
+            except Exception: log.exception('Startup audit failed')
     log.info('Ready as %s',bot.user)
 
 @bot.event
@@ -214,13 +216,14 @@ async def setup(ctx):
     if not owner_only(ctx): return await ctx.reply('Only the configured owner can run this.')
     guild=ctx.guild
     await ctx.reply('Setting up offhours. This can take a minute…')
+    # Keep all existing channel names and IDs; no automatic renaming or deletion.
     # Migrate only channels created by earlier offhours versions, preserving IDs and history.
     renames = {
         '✦・welcome':'welcome', '✓・verify':'verify', '◈・announcements':'announcements',
         '⌘・my-setup':'my-setup', '◇・my-gear':'my-gear',
         '◉・live-notifications':'live-notifications', '▣・post-your-setup':'post-your-setup',
     }
-    for old_name, new_name in renames.items():
+    for old_name, new_name in {}.items():
         old_channel = discord.utils.get(guild.text_channels, name=old_name)
         if old_channel:
             existing = discord.utils.get(guild.text_channels, name=new_name)
@@ -228,7 +231,7 @@ async def setup(ctx):
                 await old_channel.edit(name=new_name, reason='offhours minimal channel names')
     # Only delete the old commands channel in the community category.
     old_commands = discord.utils.get(guild.text_channels, name='commands')
-    if old_commands and old_commands.category and 'COMMUNITY' in old_commands.category.name:
+    if False and old_commands and old_commands.category and 'COMMUNITY' in old_commands.category.name:
         await old_commands.delete(reason='offhours simplified layout')
     roles={}
     for name,color in ROLE_SPECS: roles[name]=await ensure_role(guild,name,color)
@@ -541,6 +544,73 @@ async def mute(ctx,member:discord.Member,minutes:int=10,*,reason:str='No reason 
 async def unmute(ctx,member:discord.Member):
     await member.timeout(None,reason=f'Unmuted by {ctx.author}')
     await ctx.reply(f'Unmuted {member.mention}.')
+
+
+
+async def startup_audit(guild):
+    """Read-only startup diagnostics. Never delete messages, change roles or self-sabotage permissions."""
+    channel=discord.utils.get(guild.text_channels,name='mod-logs') or discord.utils.get(guild.text_channels,name='staff-chat')
+    if not channel: return
+    me=guild.me
+    checks={
+        'manage roles':me.guild_permissions.manage_roles,
+        'manage channels':me.guild_permissions.manage_channels,
+        'manage messages':me.guild_permissions.manage_messages,
+        'embed links':me.guild_permissions.embed_links,
+        'add reactions':me.guild_permissions.add_reactions,
+        'moderate members':me.guild_permissions.moderate_members,
+        'read message history':me.guild_permissions.read_message_history,
+    }
+    for name in ('welcome','rules','verify','general','media','post-your-setup'):
+        ch=discord.utils.get(guild.text_channels,name=name)
+        checks['#'+name]=bool(ch)
+        if ch:
+            p=ch.permissions_for(me)
+            checks['#'+name+' embeds']=p.embed_links
+            checks['#'+name+' reactions']=p.add_reactions
+    rank=discord.utils.get(guild.roles,name='regular')
+    checks['member role manageable']=bool(rank and me.top_role>rank)
+    checks['community enabled']='COMMUNITY' in [str(f).upper() for f in guild.features]
+    result='\\n'.join(('✅' if ok else '❌')+' '+name for name,ok in checks.items())
+    result+='\\n\\n*Read-only checks only; no fake member spam, real ban, or destructive permission tests.*'
+    em=discord.Embed(title='offhours / startup audit',description=result[:4000],colour=0xA68CD8)
+    owner=guild.get_member(OWNER_ID)
+    mention=owner.mention if owner else ''
+    await channel.send(content=mention,embed=em,allowed_mentions=discord.AllowedMentions(users=[owner] if owner else []))
+
+@bot.tree.command(name='setup-check',description='Inspect Community readiness and channel permissions',guild=discord.Object(id=GUILD_ID))
+@app_commands.default_permissions(manage_guild=True)
+async def setup_check(interaction:discord.Interaction):
+    if interaction.user.id!=OWNER_ID:
+        return await interaction.response.send_message('Owner only.',ephemeral=True)
+    enabled='COMMUNITY' in interaction.guild.features
+    rules=discord.utils.get(interaction.guild.text_channels,name='rules')
+    announcements=discord.utils.get(interaction.guild.text_channels,name='announcements')
+    em=discord.Embed(title='offhours / community setup',description=(
+        f'Community enabled: **{"yes" if enabled else "no"}**\\n'
+        f'Rules channel: {rules.mention if rules else "missing"}\\n'
+        f'Announcements channel: {announcements.mention if announcements else "missing"}\\n\\n'
+        'Discord requires the owner to enable Community in Server Settings. '
+        'After that, choose your rules channel and announcement channel in the Community settings.'
+    ),colour=0xA68CD8)
+    await interaction.response.send_message(embed=em,ephemeral=True)
+
+@bot.tree.command(name='music',description='Level 50+ music access and supported-source guidance',guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(link='YouTube, SoundCloud or Spotify song/playlist URL')
+async def slash_music(interaction:discord.Interaction,link:str):
+    member=interaction.user
+    if not isinstance(member,discord.Member):
+        return await interaction.response.send_message('Server members only.',ephemeral=True)
+    if member_level(interaction.guild_id,member.id)<50 and member.id!=OWNER_ID:
+        return await interaction.response.send_message('Music unlocks at level 50.',ephemeral=True)
+    if not member.voice or member.voice.channel.name not in ('general','afk'):
+        return await interaction.response.send_message('Join the general or afk voice channel first.',ephemeral=True)
+    if not re.match(r'^https://(www\\.)?(youtube\\.com|youtu\\.be|soundcloud\\.com|open\\.spotify\\.com)/',link,re.I):
+        return await interaction.response.send_message('Use a supported YouTube, SoundCloud or Spotify URL.',ephemeral=True)
+    await interaction.response.send_message(
+        'Music playback is not installed yet. The link was validated, but nothing has been queued or played. '
+        'Spotify links require separate metadata resolution and an authorised audio source.',
+        ephemeral=True)
 
 
 if __name__=='__main__':
