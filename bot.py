@@ -284,9 +284,16 @@ async def setup(ctx):
     everyone=guild.default_role
     member=roles['regular']; unverified=roles['pending']
     staff={roles['owner'],roles['admin'],roles['moderator']}
+    # STRICT EXISTING-CHANNEL MODE: never create, rename, delete, move or duplicate channels/categories.
+    # Resolve the exact existing category and only channels already inside that category.
+    # Do not search globally by channel name: e.g. #general exists as both text and voice.
+    existing_categories = {c.name: c for c in guild.categories}
+    skipped = []
     for cat_name,names in CATEGORIES:
-        cat=discord.utils.get(guild.categories,name=cat_name)
-        if not cat: cat=await guild.create_category(cat_name,reason='offhours setup')
+        cat = existing_categories.get(cat_name)
+        if cat is None:
+            skipped.append(f'category {cat_name}')
+            continue
         is_staff='STAFF' in cat_name
         if is_staff:
             await cat.set_permissions(everyone,view_channel=False)
@@ -303,9 +310,9 @@ async def setup(ctx):
         for name in names:
             voice='VOICE' in cat_name
             ch=discord.utils.get(cat.voice_channels if voice else cat.text_channels,name=name)
-            if not ch:
-                ch=await (guild.create_voice_channel(name,category=cat,reason='offhours setup') if voice else guild.create_text_channel(name,category=cat,reason='offhours setup'))
-            elif ch.category_id!=cat.id: await ch.edit(category=cat,sync_permissions=True)
+            if ch is None:
+                skipped.append(f'{cat_name} / {name}')
+                continue
             if not voice:
                 if name in ('my-setup','my-gear','announcements','live-notifications'):
                     await ch.set_permissions(member,view_channel=True,send_messages=False,add_reactions=True)
@@ -323,9 +330,11 @@ async def setup(ctx):
                 if name=='general': await ch.edit(slowmode_delay=1)
                 if name=='media': await ch.edit(slowmode_delay=15)
                 if name=='clips': await ch.edit(slowmode_delay=10)
-    welcome=discord.utils.get(guild.text_channels,name='welcome')
-    rules=discord.utils.get(guild.text_channels,name='rules')
-    verify=discord.utils.get(guild.text_channels,name='verify')
+    info_cat=existing_categories.get('01  INFORMATION')
+    community_cat=existing_categories.get('03  COMMUNITY')
+    welcome=discord.utils.get(info_cat.text_channels,name='welcome') if info_cat else None
+    rules=discord.utils.get(info_cat.text_channels,name='rules') if info_cat else None
+    verify=discord.utils.get(info_cat.text_channels,name='verify') if info_cat else None
     async def publish_panel(channel, key, *, embed, view=None):
         if not channel:
             return
@@ -363,7 +372,7 @@ async def setup(ctx):
     if verify:
         verify_embed=discord.Embed(title='verification',description='press **Verify** to unlock offhours.',colour=accent)
         await publish_panel(verify,'verify_post',embed=verify_embed,view=VerifyView())
-    general=discord.utils.get(guild.text_channels,name='general')
+    general=discord.utils.get(community_cat.text_channels,name='general') if community_cat else None
     if general:
         old=setting(guild.id,'colour_post')
         if old:
@@ -376,7 +385,9 @@ async def setup(ctx):
         if role.colour.value!=colour:
             try: await role.edit(colour=discord.Colour(colour),reason='offhours updated role palette')
             except discord.Forbidden: log.warning('Cannot recolour role %s',role_name)
-    await ctx.send('offhours structure created. Move **owner** to the top and keep the bot role above roles it manages. Disable Maki welcome and XP if using this bot for both. Use ?testwelcome to preview.')
+    summary='Setup finished: edited existing channels only. No channels or categories created, renamed, moved or deleted.'
+    if skipped: summary += '\\nMissing channels/categories (left untouched): ' + ', '.join(skipped[:12])
+    await ctx.send(summary)
 
 @bot.command(name='say')
 @commands.guild_only()
