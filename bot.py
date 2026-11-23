@@ -210,11 +210,52 @@ async def ensure_role(guild,name,color):
     if not r: r=await guild.create_role(name=name,colour=discord.Colour(color),hoist=(name in ('owner','admin','moderator')),reason='offhours setup')
     return r
 
+
+async def update_server_icon(guild):
+    """Generate a solid-background dark offhours icon locally and apply it."""
+    from io import BytesIO
+    try:
+        from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    except ImportError:
+        log.warning('Install Pillow to enable automatic server icon updates.')
+        return False
+    size=512
+    im=Image.new('RGB',(size,size),(13,13,18))
+    d=ImageDraw.Draw(im)
+    # Restrained charcoal/lavender emblem with solid background.
+    for i in range(240,0,-1):
+        shade=int(15+10*(1-i/240))
+        d.ellipse((256-i,256-i,256+i,256+i),outline=(shade,shade,shade+5),width=2)
+    d.rounded_rectangle((64,64,448,448),radius=98,outline=(105,93,133),width=8)
+    d.arc((120,110,390,390),42,314,fill=(168,149,198),width=17)
+    d.arc((146,124,402,378),48,304,fill=(31,29,40),width=23)
+    d.ellipse((355,133,369,147),fill=(207,196,220))
+    d.line((362,121,362,159),fill=(207,196,220),width=3)
+    d.line((343,140,381,140),fill=(207,196,220),width=3)
+    fonts=['/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf','C:/Windows/Fonts/arialbd.ttf']
+    font=next((ImageFont.truetype(p,78) for p in fonts if os.path.exists(p)),ImageFont.load_default())
+    text='offhours'
+    box=d.textbbox((0,0),text,font=font)
+    w=box[2]-box[0]
+    # Use a short readable monogram instead of microscopic full lettering.
+    mono='off'
+    font=next((ImageFont.truetype(p,116) for p in fonts if os.path.exists(p)),ImageFont.load_default())
+    b=d.textbbox((0,0),mono,font=font)
+    d.text(((size-(b[2]-b[0]))/2,216),mono,font=font,fill=(225,219,232),stroke_width=1)
+    out=BytesIO(); im.save(out,format='PNG',optimize=True)
+    try:
+        await guild.edit(icon=out.getvalue(),reason='offhours owner-requested icon refresh')
+        return True
+    except (discord.Forbidden,discord.HTTPException):
+        log.exception('Could not update server icon; check Manage Server permission')
+        return False
+
 @bot.command(name='setup')
 @commands.guild_only()
 async def setup(ctx):
     if not owner_only(ctx): return await ctx.reply('Only the configured owner can run this.')
     guild=ctx.guild
+    await update_server_icon(guild)
     await ctx.reply('Setting up offhours. This can take a minute…')
     # Keep all existing channel names and IDs; no automatic renaming or deletion.
     # Migrate only channels created by earlier offhours versions, preserving IDs and history.
