@@ -932,6 +932,9 @@ async def slash_message(interaction:discord.Interaction,channel:discord.TextChan
         await interaction.response.send_message('Could not publish. Check bot channel permissions.',ephemeral=True)
 
 
+from offhours_commands import install as install_offhours_commands
+install_offhours_commands(bot, OWNER_ID, GUILD_ID, con, member_xp, member_level, setting, set_setting)
+
 if __name__=='__main__':
     if not TOKEN or TOKEN=='PASTE_YOUR_PRIVATE_BOT_TOKEN_HERE' or not GUILD_ID or not OWNER_ID:
         raise SystemExit('Edit .env first: DISCORD_TOKEN, GUILD_ID and OWNER_ID are required.')
