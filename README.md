@@ -35,3 +35,13 @@ Kerit's free plan presently requires a daily heartbeat and its onboarding checks
 - Native Discord onboarding must be configured in Discord Server Settings; verification alone is not full native onboarding.
 - The 256 MB host plan may be tight depending on active servers, dependency versions and image processing.
 - For security, grant the bot only needed permissions once setup is complete.
+
+## November 23 update
+- Role colours are refreshed when the owner runs `?setup` again.
+- Join-notification preview posts on startup when the configured owner is in the guild cache; `/test-welcome` provides a manual fallback.
+- Slash commands: `/rank`, `/leaderboard`, `/colour`, `/announce`, `/test-welcome`, `/server-audit`.
+- Quick moderation aliases: `?mute @member 10 reason`, `?unmute @member`.
+- `/server-audit` is read-only: it checks configured roles, channels, and permissions; it does **not** simulate a genuine unprivileged user or claim that moderation and anti-spam were fully tested.
+- Native Discord Community activation is owner-operated, not supported through the bot API.
+- Music playback from Spotify, SoundCloud and YouTube is **not implemented**. Spotify's API does not provide unrestricted full-track audio. Do not promise ad-free playback or bypass service restrictions.
+- The server icon is not automatically replaced; owner should upload an opaque square icon through Discord settings.
