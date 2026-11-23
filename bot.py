@@ -1,4 +1,4 @@
-import os, asyncio, logging, sqlite3, time, re, random, math
+import os, asyncio, logging, sqlite3, time, re, random, math, io
 from pathlib import Path
 import aiohttp
 import discord
@@ -44,7 +44,7 @@ CATEGORIES=[
  ('04  VOICE',['general','gaming','afk']),
  ('05  STAFF',['staff-chat','mod-logs','reports'])]
 COLOURS={'slate':0x8996A6,'silver':0xC6C8CB,'blue':0x829CB7,'lavender':0xA594C1,'sage':0x8BA99C,'rose':0xBA929D}
-ROLE_SPECS=[('owner',0xF5F5F5),('admin',0xC8C8C8),('moderator',0xA8A8A8),('bots',0x7C7C7C),('booster',0xDADADA),('regular',0x999999),('pending',0x656565)] + [(f'level {i}',[0xE5E5E5,0x6FADCE,0x88BEA3,0xD3AA7A,0xD48FA8,0xC7A1EB][((i//5)-1)%6]) for i in range(5,151,5)] + [(f'colour · {k}',v) for k,v in COLOURS.items()]
+ROLE_SPECS=[('owner',0xF5F5F5),('admin',0x9DAEC2),('moderator',0x8DAFA6),('bots',0x8A92A8),('booster',0xC0A0B4),('regular',0x9BA7B4),('pending',0x777F8B)] + [(f'level {i}',[0xE5E5E5,0x6FADCE,0x88BEA3,0xD3AA7A,0xD48FA8,0xC7A1EB][((i//5)-1)%6]) for i in range(5,151,5)] + [(f'colour · {k}',v) for k,v in COLOURS.items()]
 LEVELS=[(i,f'level {i}') for i in range(5,151,5)]
 # XP = 30 * level^2; 750 XP to level 5 (~1-3 hours of active conversation).
 def level(xp): return min(150,math.isqrt(max(0,xp)//30))
@@ -835,15 +835,35 @@ async def test_safety(interaction:discord.Interaction):
     check('link non-match',not bool(link_re.search('ordinary message')))
     check('XP progression',xp_for_level(6)>xp_for_level(5)>xp_for_level(4))
     check('level cap',level(xp_for_level(150)+50000)==150)
-    check('music dependencies',bool(yt_dlp and shutil.which('ffmpeg')))
+    check('yt-dlp installed',bool(yt_dlp))
+    check('FFmpeg executable found',bool(shutil.which('ffmpeg')))
+    check('PyNaCl voice library installed',bool(discord.opus.is_loaded() or __import__('importlib').util.find_spec('nacl')))
     failed=[label for label,passed in checks if not passed]
-    em=discord.Embed(title='offhours / safety diagnostics',description='\n'.join(('PASS' if ok else 'FAIL')+'  '+label for label,ok in checks)[:3900],colour=0xE5E5E5)
-    em.add_field(name='Summary',value=f'{len(checks)-len(failed)}/{len(checks)} checks passed')
-    em.set_footer(text='Read-only checks. No real spam, bans, deleted messages, or role changes.')
-    log_ch=discord.utils.get(guild.text_channels,name='mod-logs') or discord.utils.get(guild.text_channels,name='staff-chat')
-    if log_ch:
-        await log_ch.send(content=f'<@{OWNER_ID}>  safety test complete — {len(failed)} issue(s)',embed=em,allowed_mentions=discord.AllowedMentions(users=True))
-    await interaction.followup.send('Safety diagnostics finished. '+str(len(failed))+' issues. Check staff logs.',ephemeral=True)
+    report = [
+        'OFFHOURS / SAFETY REPORT',
+        'Generated: '+discord.utils.utcnow().isoformat(),
+        'Server: '+guild.name+' ('+str(guild.id)+')',
+        'Result: '+str(len(checks)-len(failed))+'/'+str(len(checks))+' checks passed',
+        '',
+        *[('PASS' if ok else 'FAIL')+'  '+label for label,ok in checks],
+        '',
+        'READ-ONLY: These checks inspect bot permissions, channel access,',
+        'role hierarchy, dependencies and basic logic. They do NOT simulate',
+        'real user joins, spam, bans, punishment or real music playback.',
+        '',
+        'Community enabled: '+str('COMMUNITY' in guild.features),
+        'Native onboarding configured: NOT VERIFIED by this command.',
+        'Music: install yt-dlp, PyNaCl and FFmpeg on the machine hosting the bot.',
+        'Spotify tracks cannot be streamed directly using a Spotify URL.',
+        '',
+        'If a check fails, fix the reported permission or dependency and rerun.'
+    ]
+    payload='\\n'.join(report).encode('utf-8')
+    await interaction.followup.send(
+        content=f'Safety diagnostics: {len(checks)-len(failed)}/{len(checks)} passed. Download the attached report.',
+        file=discord.File(io.BytesIO(payload),filename='readme.txt'),
+        ephemeral=True
+    )
 
 
 if __name__=='__main__':
