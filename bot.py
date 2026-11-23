@@ -128,12 +128,7 @@ async def on_ready():
         except discord.HTTPException: log.exception('Slash command sync failed')
         guild=bot.get_guild(GUILD_ID)
         if guild:
-            owner=guild.get_member(OWNER_ID)
-            if owner:
-                try: await join_panel(owner,test=True)
-                except discord.HTTPException: log.exception('Could not send startup welcome preview')
-            try: await startup_audit(guild)
-            except Exception: log.exception('Startup audit failed')
+            # Startup must not post test welcomes, audits or owner pings.
     log.info('Ready as %s',bot.user)
 
 @bot.event
@@ -790,7 +785,7 @@ async def slash_music(interaction:discord.Interaction,link:str):
     if not channel:return await interaction.response.send_message('Join general or afk voice first.',ephemeral=True)
     if not re.match(r'^https://(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com|soundcloud\.com)/',link,re.I):
         return await interaction.response.send_message('Use a YouTube or SoundCloud link. Spotify streams cannot be extracted directly.',ephemeral=True)
-    if not yt_dlp or not shutil.which('ffmpeg'):
+    if not yt_dlp or not shutil.which('ffmpeg') or not __import__('importlib').util.find_spec('nacl'):
         return await interaction.response.send_message('Install yt-dlp, PyNaCl and FFmpeg on the host to enable audio.',ephemeral=True)
     await interaction.response.defer(ephemeral=True,thinking=True)
     try:
@@ -919,6 +914,24 @@ async def slash_ban(interaction:discord.Interaction,user:str,reason:str='No reas
         await log_action(interaction.guild,'ban: '+str(target.id)+' by '+str(interaction.user.id))
     except discord.HTTPException:
         await interaction.response.send_message('Ban failed. Check role hierarchy and permissions.',ephemeral=True)
+
+
+@bot.tree.command(name='message',description='Send a public formatted message to a selected channel',guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(channel='Channel to post in',message='Discord Markdown text',title='Optional embed title',embed='Send as an embed instead of plain text')
+@app_commands.default_permissions(manage_guild=True)
+async def slash_message(interaction:discord.Interaction,channel:discord.TextChannel,message:str,title:str='',embed:bool=False):
+    if interaction.user.id!=OWNER_ID and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message('Staff only.',ephemeral=True)
+    if len(message)>1900 or len(title)>200:
+        return await interaction.response.send_message('Message or title too long.',ephemeral=True)
+    try:
+        if embed:
+            await channel.send(embed=discord.Embed(title=title or None,description=message,colour=0xE6E6E6),allowed_mentions=discord.AllowedMentions.none())
+        else:
+            await channel.send(message,allowed_mentions=discord.AllowedMentions.none())
+        await interaction.response.send_message('Published in '+channel.mention,ephemeral=True)
+    except discord.HTTPException:
+        await interaction.response.send_message('Could not publish. Check bot channel permissions.',ephemeral=True)
 
 
 if __name__=='__main__':
