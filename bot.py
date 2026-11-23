@@ -126,9 +126,7 @@ async def on_ready():
         if TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET: twitch_check.start()
         try: await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
         except discord.HTTPException: log.exception('Slash command sync failed')
-        guild=bot.get_guild(GUILD_ID)
-        if guild:
-            # Startup must not post test welcomes, audits or owner pings.
+        # No startup welcome previews or audit messages.
     log.info('Ready as %s',bot.user)
 
 @bot.event
