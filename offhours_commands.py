@@ -149,7 +149,7 @@ def install(bot, owner_id, guild_id, connection, get_xp, get_level, get_setting,
         await i.response.defer(ephemeral=True)
         cutoff=discord.utils.utcnow()-datetime.timedelta(days=7)
         try:
-            deleted=await i.channel.purge(limit=min(amount+20,120),check=lambda m:m.created_at>=cutoff,bulk=True,reason=f"Purge by {i.user}")
+            deleted=await i.channel.purge(limit=amount,check=lambda m:m.created_at>=cutoff,bulk=True,reason=f"Purge by {i.user}")
             await reply(i,f"Deleted {min(len(deleted),amount)} messages newer than 7 days.")
         except discord.HTTPException as e: await reply(i,f"Purge failed: {e}")
     @moderation.command(name="slowmode",description="Set channel slowmode seconds")
