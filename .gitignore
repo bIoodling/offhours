@@ -7,3 +7,10 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+data/
+logs/
+*.db
+*.db-*
+transcripts/
+backups/
+.runtime/

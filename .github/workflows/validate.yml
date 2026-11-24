@@ -15,6 +15,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: Validate Python syntax
-        run: python -m py_compile bot.py
+        run: python -m compileall -q bot.py offhours_commands.py main.py cogs services
       - name: Confirm required files exist
-        run: test -f requirements.txt && test -f .env.example
+        run: test -f requirements.txt && test -f .env.example && test -f main.py

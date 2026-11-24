@@ -8,25 +8,24 @@ from collections import Counter
 import discord
 from discord import app_commands
 
-def install(bot, owner_id, guild_id, connection, get_xp, get_level, get_setting, put_setting):
-    scope=discord.Object(id=guild_id)
+def install(bot, connection, get_xp, get_level, get_setting, put_setting):
     def group(name, description):
-        g=app_commands.Group(name=name, description=description, guild_ids=[guild_id])
-        bot.tree.add_command(g, guild=scope)
+        g=app_commands.Group(name=name, description=description, guild_only=True)
+        bot.tree.add_command(g)
         return g
     def staff(i):
-        return i.user.id == owner_id or i.user.guild_permissions.manage_messages
+        return i.user.guild_permissions.manage_messages
     def admin(i):
-        return i.user.id == owner_id or i.user.guild_permissions.manage_guild
+        return i.user.guild_permissions.manage_guild
     async def reply(i, text, public=False):
         if i.response.is_done():
             await i.followup.send(str(text)[:1900], ephemeral=not public, allowed_mentions=discord.AllowedMentions.none())
         else:
             await i.response.send_message(str(text)[:1900], ephemeral=not public, allowed_mentions=discord.AllowedMentions.none())
     def require(i, predicate):
-        return i.guild is not None and i.guild.id==guild_id and predicate(i)
+        return i.guild is not None and predicate(i)
     def check_target(i, member):
-        return i.user.id==owner_id or (member.id!=i.guild.owner_id and member.top_role<i.user.top_role)
+        return i.user.id==i.guild.owner_id or (member.id!=i.guild.owner_id and member.top_role<i.user.top_role)
     def fmt_duration(seconds):
         seconds=int(seconds)
         return f"{seconds//86400}d {(seconds%86400)//3600}h {(seconds%3600)//60}m"
@@ -319,22 +318,22 @@ def install(bot, owner_id, guild_id, connection, get_xp, get_level, get_setting,
         await reply(i,"Maximum level reached." if lvl>=150 else f"{m.display_name} needs {max(0,30*(lvl+1)**2-get_xp(i.guild.id,m.id))} XP for level {lvl+1}.")
     @xp.command(name="set",description="Set XP for a member (owner only)")
     async def xp_set(i:discord.Interaction,member:discord.Member,amount:app_commands.Range[int,0,100000000]):
-        if i.user.id!=owner_id: return await reply(i,"Owner only.")
+        if not i.user.guild_permissions.administrator: return await reply(i,"Server Administrator permission required.")
         connection.execute("INSERT INTO xp (guild,user,xp,last) VALUES (?,?,?,0) ON CONFLICT(guild,user) DO UPDATE SET xp=excluded.xp",(i.guild.id,member.id,amount));connection.commit()
         await reply(i,"XP updated.")
     @xp.command(name="add",description="Add XP to a member (owner only)")
     async def xp_add(i:discord.Interaction,member:discord.Member,amount:app_commands.Range[int,1,1000000]):
-        if i.user.id!=owner_id: return await reply(i,"Owner only.")
+        if not i.user.guild_permissions.administrator: return await reply(i,"Server Administrator permission required.")
         connection.execute("INSERT INTO xp (guild,user,xp,last) VALUES (?,?,?,0) ON CONFLICT(guild,user) DO UPDATE SET xp=xp+excluded.xp",(i.guild.id,member.id,amount));connection.commit()
         await reply(i,"XP added.")
     @xp.command(name="remove",description="Remove XP from a member (owner only)")
     async def xp_remove(i:discord.Interaction,member:discord.Member,amount:app_commands.Range[int,1,1000000]):
-        if i.user.id!=owner_id: return await reply(i,"Owner only.")
+        if not i.user.guild_permissions.administrator: return await reply(i,"Server Administrator permission required.")
         connection.execute("UPDATE xp SET xp=MAX(0,xp-?) WHERE guild=? AND user=?",(amount,i.guild.id,member.id));connection.commit()
         await reply(i,"XP removed.")
     @xp.command(name="reset",description="Reset a member's XP (owner only)")
     async def xp_reset(i:discord.Interaction,member:discord.Member):
-        if i.user.id!=owner_id: return await reply(i,"Owner only.")
+        if not i.user.guild_permissions.administrator: return await reply(i,"Server Administrator permission required.")
         connection.execute("DELETE FROM xp WHERE guild=? AND user=?",(i.guild.id,member.id));connection.commit()
         await reply(i,"XP reset.")
     settings=group("config","Inspect and update offhours settings")

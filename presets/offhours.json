@@ -1,0 +1,15 @@
+{
+  "name": "Offhours legacy server",
+  "description": "Migration reference only. Never applied to a new server automatically.",
+  "channels": {
+    "welcome": ["welcome"], "rules": ["rules"], "verify": ["verify"],
+    "announcements": ["announcements"], "general": ["general"],
+    "media": ["media"], "clips": ["clips"], "post-your-setup": ["post-your-setup"],
+    "logs": ["mod-logs"], "reports": ["reports"],
+    "live": ["live-alerts", "live-notifications"], "video": ["announcements"], "levels": ["welcome"]
+  },
+  "roles": ["regular", "pending", "owner", "admin", "moderator", "bots", "booster"],
+  "colours": ["slate", "silver", "blue", "lavender", "sage", "rose"],
+  "regions": ["europe", "north america", "south america", "asia", "africa", "oceania"],
+  "twitch_login": "hikamunii"
+}

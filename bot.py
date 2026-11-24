@@ -7,18 +7,26 @@ from dotenv import load_dotenv
 
 load_dotenv()
 TOKEN=os.getenv('DISCORD_TOKEN','')
-GUILD_ID=int(os.getenv('GUILD_ID','0'))
-OWNER_ID=int(os.getenv('OWNER_ID','0'))
+LEGACY_GUILD_ID=int(os.getenv('GUILD_ID') or '0')  # optional one-time migration only
+
 TWITCH_CLIENT_ID=os.getenv('TWITCH_CLIENT_ID','')
 TWITCH_CLIENT_SECRET=os.getenv('TWITCH_CLIENT_SECRET','')
-TWITCH_LOGIN=os.getenv('TWITCH_LOGIN','hikamunii')
+TWITCH_LOGIN=os.getenv('TWITCH_LOGIN','')
 CUSTOM_XP=True  # offhours handles levels; disable Maki XP to avoid duplicates
 WELCOME_BANNER_URL=os.getenv('WELCOME_BANNER_URL','')
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger('offhours')
-DB=Path(os.getenv('OFFHOURS_DB_PATH', str(Path(__file__).with_name('offhours.sqlite3'))))
+from logging.handlers import RotatingFileHandler
+log_folder=Path('logs');log_folder.mkdir(exist_ok=True)
+rotating_log=RotatingFileHandler(log_folder/'offhours.log',maxBytes=1048576,backupCount=3,encoding='utf-8')
+rotating_log.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s'))
+log.addHandler(rotating_log)
+DB=Path(os.getenv('OFFHOURS_DB_PATH') or str(Path(__file__).with_name('offhours.sqlite3')))
 DB.parent.mkdir(parents=True, exist_ok=True)
 con=sqlite3.connect(DB)
+con.execute('PRAGMA journal_mode=WAL')
+con.execute('PRAGMA busy_timeout=5000')
+con.execute('PRAGMA foreign_keys=ON')
 con.execute('CREATE TABLE IF NOT EXISTS xp (guild INTEGER, user INTEGER, xp INTEGER DEFAULT 0, last REAL DEFAULT 0, PRIMARY KEY(guild,user))')
 con.execute('CREATE TABLE IF NOT EXISTS warnings (id INTEGER PRIMARY KEY AUTOINCREMENT, guild INTEGER, user INTEGER, moderator INTEGER, reason TEXT, timestamp INTEGER)')
 con.execute('CREATE TABLE IF NOT EXISTS colours (guild INTEGER, user INTEGER, role TEXT, PRIMARY KEY(guild,user))')
@@ -34,32 +42,38 @@ def set_setting(g,k,v):
 
 intents=discord.Intents.default()
 intents.members=True
+intents.invites=True
+intents.moderation=True
 intents.message_content=True
-bot=commands.Bot(command_prefix='?', intents=intents, help_command=None, allowed_mentions=discord.AllowedMentions(everyone=False,roles=False))
+from services.configuration import ServerCommandTree, administrator, enabled, channel_for, role_for, allowed_command
+def command_prefix(bot, message):
+    return setting(message.guild.id, 'prefix', '?') if message.guild else '?'
+bot=commands.Bot(command_prefix=command_prefix, intents=intents, tree_cls=ServerCommandTree, chunk_guilds_at_startup=False, max_messages=500, help_command=None, allowed_mentions=discord.AllowedMentions.none())
+bot.get_setting = setting
+@bot.check
+async def prefix_policy(ctx):
+    if not ctx.guild:
+        return False
+    from types import SimpleNamespace
+    invocation = SimpleNamespace(guild=ctx.guild,guild_id=ctx.guild.id,user=ctx.author,channel_id=ctx.channel.id)
+    ok, _ = allowed_command(invocation,setting,ctx.command.qualified_name if ctx.command else '')
+    return ok
 
-CATEGORIES=[
- ('01  INFORMATION',['welcome','rules','verify','announcements']),
- ('02  HIKA',['my-setup','my-gear','live-notifications']),
- ('03  COMMUNITY',['general','media','post-your-setup','clips']),
- ('04  VOICE',['general','gaming','afk']),
- ('05  STAFF',['staff-chat','mod-logs','reports'])]
 COLOURS={'slate':0x8996A6,'silver':0xC6C8CB,'blue':0x829CB7,'lavender':0xA594C1,'sage':0x8BA99C,'rose':0xBA929D}
-ROLE_SPECS=[('owner',0xF5F5F5),('admin',0x9DAEC2),('moderator',0x8DAFA6),('bots',0x8A92A8),('booster',0xC0A0B4),('regular',0x9BA7B4),('pending',0x777F8B)] + [(f'level {i}',[0xE5E5E5,0x6FADCE,0x88BEA3,0xD3AA7A,0xD48FA8,0xC7A1EB][((i//5)-1)%6]) for i in range(5,151,5)] + [(f'colour · {k}',v) for k,v in COLOURS.items()]
-LEVELS=[(i,f'level {i}') for i in range(5,151,5)]
 # XP = 30 * level^2; 750 XP to level 5 (~1-3 hours of active conversation).
 def level(xp): return min(150,math.isqrt(max(0,xp)//30))
 def xp_for_level(lvl): return 30*lvl*lvl
 last_messages={}
 link_re=re.compile(r'(https?://|www\.|discord\.gg/|tenor\.com/|giphy\.com/)',re.I)
-def owner_only(ctx): return ctx.guild is not None and ctx.author.id==OWNER_ID and ctx.guild.id==GUILD_ID
+def owner_only(ctx): return ctx.guild is not None and administrator(ctx.author)
 
 def staff_only():
     async def predicate(ctx):
-        return ctx.guild is not None and (ctx.author.id==OWNER_ID or ctx.author.guild_permissions.manage_messages)
+        return ctx.guild is not None and (ctx.author.guild_permissions.manage_messages)
     return commands.check(predicate)
 
 async def log_action(guild, msg):
-    channel=discord.utils.get(guild.text_channels,name='mod-logs')
+    channel=channel_for(guild,setting,'logs')
     if channel:
         try: await channel.send(msg,allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException: pass
@@ -69,9 +83,11 @@ class VerifyView(discord.ui.View):
     @discord.ui.button(label='Verify',style=discord.ButtonStyle.success,custom_id='offhours:verify:v1')
     async def verify(self,interaction:discord.Interaction,button:discord.ui.Button):
         if not interaction.guild or not isinstance(interaction.user,discord.Member): return
-        member=discord.utils.get(interaction.guild.roles,name='regular')
-        unverified=discord.utils.get(interaction.guild.roles,name='pending')
-        if not member: return await interaction.response.send_message('Verification is not configured yet.',ephemeral=True)
+        if not enabled(setting,interaction.guild_id,'verification'):
+            return await interaction.response.send_message('Verification is disabled in this server.',ephemeral=True)
+        member=role_for(interaction.guild,setting,'regular')
+        unverified=role_for(interaction.guild,setting,'pending')
+        if not member or member.managed or member >= interaction.guild.me.top_role or member.permissions.administrator or member.permissions.manage_roles: return await interaction.response.send_message('Verification role is unavailable or protected. Ask an administrator to configure it.',ephemeral=True)
         try:
             await interaction.user.add_roles(member,reason='Verified via button')
             if unverified and unverified in interaction.user.roles: await interaction.user.remove_roles(unverified,reason='Verified via button')
@@ -87,14 +103,19 @@ class ColourSelect(discord.ui.Select):
     async def callback(self,interaction):
         if not isinstance(interaction.user,discord.Member): return
         member=interaction.user; g=interaction.guild
-        if not discord.utils.get(member.roles,name='regular'):
+        regular=role_for(g,setting,'regular')
+        if not enabled(setting,g.id,'selfroles') or (regular and regular not in member.roles):
             return await interaction.response.send_message('verify first.',ephemeral=True)
         if member_level(g.id,member.id)>=5:
             return await interaction.response.send_message('level rewards replace starter colours after level 5.',ephemeral=True)
-        for r in member.roles:
-            if r.name.startswith('colour · '): await member.remove_roles(r,reason='Changed colour')
-        chosen=discord.utils.get(g.roles,name='colour · '+self.values[0])
-        if chosen: await member.add_roles(chosen,reason='Selected starter colour')
+        values={int(v) for k,v in con.execute("SELECT key,value FROM settings WHERE guild=? AND key LIKE 'selfrole:colour:%'",(g.id,)) if v.isdecimal()}
+        selected=setting(g.id,'selfrole:colour:'+self.values[0],'0')
+        chosen=g.get_role(int(selected)) if selected.isdecimal() else None
+        if not chosen or chosen.managed or chosen>=g.me.top_role or chosen.permissions.administrator or chosen.permissions.manage_roles:
+            return await interaction.response.send_message('This colour role is no longer configured. Open /colour for the current menu.',ephemeral=True)
+        remove=[r for r in member.roles if r.id in values and r.id!=chosen.id]
+        if remove:await member.remove_roles(*remove,reason='Changed configured colour')
+        await member.add_roles(chosen,reason='Selected configured starter colour')
         con.execute('INSERT OR REPLACE INTO colours VALUES (?,?,?)',(g.id,member.id,self.values[0]));con.commit()
         await interaction.response.send_message('colour set to '+self.values[0]+'.',ephemeral=True)
 class ColourView(discord.ui.View):
@@ -105,26 +126,29 @@ def member_xp(g,u):
     return row[0] if row else 0
 def member_level(g,u): return level(member_xp(g,u))
 async def level_panel(member,lvl):
-    ch=discord.utils.get(member.guild.text_channels,name='welcome')
-    if not ch:return
-    em=discord.Embed(title='level up  /  '+str(lvl),description=f'{member.mention} reached **level {lvl}**.',colour=0xE5E5E5)
-    em.set_thumbnail(url=member.display_avatar.url)
-    await ch.send(embed=em,allowed_mentions=discord.AllowedMentions(users=[member]),silent=True)
-async def join_panel(member,test=False):
-    ch=discord.utils.get(member.guild.text_channels,name='welcome')
-    if not ch:return
-    rules=discord.utils.get(member.guild.text_channels,name='rules')
-    destination=rules.mention if rules else '#rules'
-    em=discord.Embed(title='join notifier  /  test' if test else 'welcome to offhours',description=f'{member.mention}  ·  member #{member.guild.member_count}\n\nstart in {destination}',colour=0xE5E5E5)
-    em.set_thumbnail(url=member.display_avatar.url)
-    if WELCOME_BANNER_URL.startswith('https://'):em.set_image(url=WELCOME_BANNER_URL)
-    await ch.send(embed=em,allowed_mentions=discord.AllowedMentions(users=[member]))
+    service = getattr(bot, 'panels_service', None)
+    if service:
+        await service.emit('level', member, level=lvl, xp=member_xp(member.guild.id,member.id))
+
+async def join_panel(member,test=False,**variables):
+    service = getattr(bot, 'panels_service', None)
+    if service:
+        await service.emit('welcome', member, test=test, **variables)
+
 @bot.event
 async def on_ready():
     if not getattr(bot,'_initialized',False):
         bot.add_view(VerifyView()); bot.add_view(ColourView()); bot.add_view(RegionView()); bot._initialized=True
-        if TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET: twitch_check.start()
-        try: await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+        from services.legacy_preset import migrate_legacy
+        if LEGACY_GUILD_ID:
+            legacy=bot.get_guild(LEGACY_GUILD_ID)
+            if legacy: migrate_legacy(legacy,con,setting,set_setting)
+        try:
+            await bot.tree.sync()
+            if LEGACY_GUILD_ID and setting(LEGACY_GUILD_ID,'migration:global_commands','0')!='1':
+                bot.tree.clear_commands(guild=discord.Object(id=LEGACY_GUILD_ID))
+                await bot.tree.sync(guild=discord.Object(id=LEGACY_GUILD_ID))
+                set_setting(LEGACY_GUILD_ID,'migration:global_commands','1')
         except discord.HTTPException: log.exception('Slash command sync failed')
         # No startup welcome previews or audit messages.
     log.info('Ready as %s',bot.user)
@@ -132,257 +156,22 @@ async def on_ready():
 @bot.event
 async def on_member_join(member):
     if member.bot: return
-    role=discord.utils.get(member.guild.roles,name='pending')
-    if role:
-        try: await member.add_roles(role,reason='New member awaiting verification')
-        except discord.Forbidden: log.warning('Cannot assign unverified role')
-    await join_panel(member)  # Maki welcome messages should be disabled to prevent duplicates.
+    invite_variables=await invites_service.joined(member) if enabled(setting,member.guild.id,'invites') else {}
+    if enabled(setting,member.guild.id,'verification'):
+        role=role_for(member.guild,setting,'pending')
+        if role:
+            try: await member.add_roles(role,reason='Configured verification on join')
+            except discord.HTTPException: log.warning('Cannot assign configured pending role in %s',member.guild.id)
+    autorole=role_for(member.guild,setting,'autorole')
+    if enabled(setting,member.guild.id,'selfroles') and autorole:
+        try: await member.add_roles(autorole,reason='Configured autorole')
+        except discord.HTTPException: pass
+    if enabled(setting,member.guild.id,'welcome'):
+        await join_panel(member,**invite_variables)
 
 @bot.event
 async def on_message(message):
-    if message.guild and not message.author.bot and message.guild.id==GUILD_ID and isinstance(message.author,discord.Member):
-        member=message.author; g=message.guild; now=time.time(); lvl=member_level(g.id,member.id)
-        if message.content.startswith('?'):
-            await bot.process_commands(message);return
-        if discord.utils.get(member.roles,name='regular') and not member.guild_permissions.manage_messages:
-            if message.channel.name=='general' and lvl<20 and (link_re.search(message.content) or message.attachments):
-                try: await message.delete(); await member.send('links and GIF attachments in #general unlock at level 20.')
-                except discord.HTTPException: pass
-                return
-            # Basic flood control; Discord slowmode is separately configured.
-            key=(g.id,member.id,message.channel.id)
-            prior=last_messages.get(key)
-            if prior and now-prior[0]<2.5 and prior[1]==message.content:
-                try: await message.delete()
-                except discord.HTTPException: pass
-                return
-            last_messages[key]=(now,message.content)
-        if message.channel.name=='post-your-setup' and message.attachments:
-            for emoji in ('🔥','❤️','💀','❌'):
-                try: await message.add_reaction(emoji)
-                except discord.HTTPException: pass
-        if discord.utils.get(member.roles,name='regular') and len(message.content.strip())>=8:
-            row=con.execute('SELECT xp,last FROM xp WHERE guild=? AND user=?',(g.id,member.id)).fetchone()
-            prev_xp,prev_last=row if row else (0,0)
-            if now-prev_last>=45 and lvl<150:
-                gained=random.randint(12,18);new_xp=prev_xp+gained;new_lvl=level(new_xp)
-                con.execute('INSERT OR REPLACE INTO xp VALUES (?,?,?,?)',(g.id,member.id,new_xp,now));con.commit()
-                if new_lvl>lvl:
-                    for threshold,name in LEVELS:
-                        if lvl<threshold<=new_lvl:
-                            role=discord.utils.get(g.roles,name=name)
-                            if role:
-                                try: await member.add_roles(role,reason=f'Level {threshold} reward')
-                                except discord.Forbidden: pass
-                    if lvl<5<=new_lvl:
-                        for role in member.roles:
-                            if role.name.startswith('colour · '):
-                                try: await member.remove_roles(role,reason='Level 5 replaces starter colour')
-                                except discord.Forbidden: pass
-                    try: await level_panel(member,new_lvl)
-                    except discord.HTTPException: pass
     await bot.process_commands(message)
-
-@bot.event
-async def on_raw_reaction_add(payload):
-    if payload.guild_id!=GUILD_ID or payload.user_id==bot.user.id:return
-    guild=bot.get_guild(payload.guild_id)
-    if not guild:return
-    member=payload.member or guild.get_member(payload.user_id)
-    if not member or member.bot or member.guild_permissions.manage_messages:return
-    channel=guild.get_channel(payload.channel_id)
-    if not channel or channel.name not in ('general','media','clips'):return
-    if member_level(guild.id,member.id)>=10:return
-    try:
-        msg=await channel.fetch_message(payload.message_id)
-        await msg.remove_reaction(payload.emoji,member)
-    except (discord.HTTPException,discord.Forbidden):pass
-
-async def ensure_role(guild,name,color):
-    r=discord.utils.get(guild.roles,name=name)
-    if not r: r=await guild.create_role(name=name,colour=discord.Colour(color),hoist=(name in ('owner','admin','moderator')),reason='offhours setup')
-    return r
-
-
-async def update_server_icon(guild):
-    """Generate a solid-background dark offhours icon locally and apply it."""
-    from io import BytesIO
-    try:
-        from PIL import Image, ImageDraw, ImageFont, ImageFilter
-    except ImportError:
-        log.warning('Install Pillow to enable automatic server icon updates.')
-        return False
-    size=512
-    im=Image.new('RGB',(size,size),(13,13,18))
-    d=ImageDraw.Draw(im)
-    # Restrained charcoal/lavender emblem with solid background.
-    for i in range(240,0,-1):
-        shade=int(15+10*(1-i/240))
-        d.ellipse((256-i,256-i,256+i,256+i),outline=(shade,shade,shade+5),width=2)
-    d.rounded_rectangle((64,64,448,448),radius=98,outline=(105,93,133),width=8)
-    d.arc((120,110,390,390),42,314,fill=(168,149,198),width=17)
-    d.arc((146,124,402,378),48,304,fill=(31,29,40),width=23)
-    d.ellipse((355,133,369,147),fill=(207,196,220))
-    d.line((362,121,362,159),fill=(207,196,220),width=3)
-    d.line((343,140,381,140),fill=(207,196,220),width=3)
-    fonts=['/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf','C:/Windows/Fonts/arialbd.ttf']
-    font=next((ImageFont.truetype(p,78) for p in fonts if os.path.exists(p)),ImageFont.load_default())
-    text='offhours'
-    box=d.textbbox((0,0),text,font=font)
-    w=box[2]-box[0]
-    # Use a short readable monogram instead of microscopic full lettering.
-    mono='off'
-    font=next((ImageFont.truetype(p,116) for p in fonts if os.path.exists(p)),ImageFont.load_default())
-    b=d.textbbox((0,0),mono,font=font)
-    d.text(((size-(b[2]-b[0]))/2,216),mono,font=font,fill=(225,219,232),stroke_width=1)
-    out=BytesIO(); im.save(out,format='PNG',optimize=True)
-    try:
-        await guild.edit(icon=out.getvalue(),reason='offhours owner-requested icon refresh')
-        return True
-    except (discord.Forbidden,discord.HTTPException):
-        log.exception('Could not update server icon; check Manage Server permission')
-        return False
-
-@bot.command(name='setup')
-@commands.guild_only()
-async def setup(ctx):
-    if not owner_only(ctx): return await ctx.reply('Only the configured owner can run this.')
-    guild=ctx.guild
-    await ctx.reply('Setting up offhours. This can take a minute…')
-    # Preserve all existing channel IDs and category names; only a few information channel names get subtle symbols.
-    # Migrate only channels created by earlier offhours versions, preserving IDs and history.
-    renames = {
-        '✦・welcome':'welcome', '✓・verify':'verify', '◈・announcements':'announcements',
-        '⌘・my-setup':'my-setup', '◇・my-gear':'my-gear',
-        '◉・live-notifications':'live-notifications', '▣・post-your-setup':'post-your-setup',
-    }
-    for old_name, new_name in {}.items():
-        old_channel = discord.utils.get(guild.text_channels, name=old_name)
-        if old_channel:
-            existing = discord.utils.get(guild.text_channels, name=new_name)
-            if not existing:
-                await old_channel.edit(name=new_name, reason='offhours minimal channel names')
-    # Only delete the old commands channel in the community category.
-    old_commands = discord.utils.get(guild.text_channels, name='commands')
-    if False and old_commands and old_commands.category and 'COMMUNITY' in old_commands.category.name:
-        await old_commands.delete(reason='offhours simplified layout')
-    roles={}
-    for name,color in ROLE_SPECS: roles[name]=await ensure_role(guild,name,color)
-    for region in ('europe','north america','south america','asia','africa','oceania'):
-        await ensure_role(guild,'region · '+region,0x8898A8)
-    # Role ordering is constrained by Discord's role hierarchy. Adjust owner/bot ordering manually after setup.
-    await guild.me.add_roles(roles['bots'],reason='offhours bot grouping')
-    owner=guild.get_member(OWNER_ID)
-    if owner and roles['owner'] not in owner.roles:
-        try: await owner.add_roles(roles['owner'],reason='offhours owner')
-        except discord.Forbidden: await ctx.send('Move my bot role above owner temporarily to assign it, or assign owner manually.')
-    everyone=guild.default_role
-    member=roles['regular']; unverified=roles['pending']
-    staff={roles['owner'],roles['admin'],roles['moderator']}
-    # STRICT EXISTING-CHANNEL MODE: never create, rename, delete, move or duplicate channels/categories.
-    # Resolve the exact existing category and only channels already inside that category.
-    # Do not search globally by channel name: e.g. #general exists as both text and voice.
-    existing_categories = {c.name: c for c in guild.categories}
-    skipped = []
-    for cat_name,names in CATEGORIES:
-        cat = existing_categories.get(cat_name)
-        if cat is None:
-            skipped.append(f'category {cat_name}')
-            continue
-        is_staff='STAFF' in cat_name
-        if is_staff:
-            await cat.set_permissions(everyone,view_channel=False)
-            for r in staff: await cat.set_permissions(r,view_channel=True,send_messages=True,read_message_history=True)
-            await cat.set_permissions(guild.me,view_channel=True,send_messages=True)
-        elif 'INFORMATION' in cat_name:
-            await cat.set_permissions(everyone,view_channel=True,send_messages=False,read_message_history=True)
-            await cat.set_permissions(member,view_channel=True,send_messages=False)
-        else:
-            await cat.set_permissions(everyone,view_channel=False)
-            await cat.set_permissions(member,view_channel=True,send_messages=True,read_message_history=True)
-            for r in staff: await cat.set_permissions(r,view_channel=True,send_messages=True)
-            await cat.set_permissions(guild.me,view_channel=True,send_messages=True)
-        for name in names:
-            voice='VOICE' in cat_name
-            ch=discord.utils.get(cat.voice_channels if voice else cat.text_channels,name=name)
-            if ch is None:
-                skipped.append(f'{cat_name} / {name}')
-                continue
-            if not voice:
-                if name in ('my-setup','my-gear','announcements','live-notifications'):
-                    await ch.set_permissions(member,view_channel=True,send_messages=False,add_reactions=True)
-                    for r in (roles['admin'],roles['moderator']):
-                        await ch.set_permissions(r,view_channel=True,send_messages=False)
-                    await ch.set_permissions(roles['owner'],view_channel=True,send_messages=True)
-                    await ch.set_permissions(guild.me,view_channel=True,send_messages=True)
-                if name in ('welcome','rules','verify'):
-                    await ch.set_permissions(everyone,view_channel=True,send_messages=False)
-                    if name in ('rules','verify'):
-                        await ch.set_permissions(member,view_channel=False)
-                    else:
-                        await ch.set_permissions(member,view_channel=True,send_messages=False)
-                if name=='post-your-setup': await ch.edit(slowmode_delay=3600)
-                if name=='general': await ch.edit(slowmode_delay=1)
-                if name=='media': await ch.edit(slowmode_delay=15)
-                if name=='clips': await ch.edit(slowmode_delay=10)
-    info_cat=existing_categories.get('01  INFORMATION')
-    community_cat=existing_categories.get('03  COMMUNITY')
-    welcome=discord.utils.get(info_cat.text_channels,name='welcome') if info_cat else None
-    rules=discord.utils.get(info_cat.text_channels,name='rules') if info_cat else None
-    verify=discord.utils.get(info_cat.text_channels,name='verify') if info_cat else None
-    async def publish_panel(channel, key, *, embed, view=None):
-        if not channel:
-            return
-        # Delete previous bot-authored panels before posting a fresh one.
-        # This avoids Discord's visible '(edited)' indicator.
-        old_ids = set()
-        old_id = setting(guild.id, key)
-        if old_id and old_id.isdigit():
-            old_ids.add(int(old_id))
-        async for msg in channel.history(limit=50):
-            if msg.author.id == bot.user.id and (msg.id in old_ids or msg.embeds):
-                try:
-                    await msg.delete()
-                except (discord.Forbidden, discord.HTTPException):
-                    pass
-        posted = await channel.send(embed=embed, view=view)
-        set_setting(guild.id, key, posted.id)
-
-    # Light neutral embed accent and simple horizontal separators; no edited messages.
-    accent=discord.Colour(0xE6E6E6)
-    line='━━━━━━━━━━━━━━━━━━━━'
-    if welcome:
-        async for old in welcome.history(limit=40):
-            if old.author.id==bot.user.id and old.embeds and old.embeds[0].title and 'welcome to offhours' in old.embeds[0].title.lower():
-                try: await old.delete()
-                except discord.HTTPException: pass
-    if rules:
-        rules_embed=discord.Embed(title='rules',description=(
-            '**01  respect people**\nno harassment, racism or bullying.\n\n'
-            '**02  keep it clean**\nno scams, spam, NSFW or sharing private information.\n\n'
-            '**03  follow Discord guidelines**\nserious violations may result in a ban.\n\n'
-            f'continue to {verify.mention if verify else "#verify"}'),colour=accent)
-        await publish_panel(rules,'rules_post',embed=rules_embed)
-
-    if verify:
-        verify_embed=discord.Embed(title='verification',description='press **Verify** to unlock offhours.',colour=accent)
-        await publish_panel(verify,'verify_post',embed=verify_embed,view=VerifyView())
-    general=discord.utils.get(community_cat.text_channels,name='general') if community_cat else None
-    if general:
-        old=setting(guild.id,'colour_post')
-        if old:
-            try: await (await general.fetch_message(int(old))).delete()
-            except discord.HTTPException: pass
-        colour_msg=await general.send(embed=discord.Embed(title='choose your colour',description='pick a starter colour below. level 5 replaces it with your earned role.',colour=accent),view=ColourView())
-        set_setting(guild.id,'colour_post',colour_msg.id)
-    for role_name,colour in ROLE_SPECS:
-        role=roles[role_name]
-        if role.colour.value!=colour:
-            try: await role.edit(colour=discord.Colour(colour),reason='offhours updated role palette')
-            except discord.Forbidden: log.warning('Cannot recolour role %s',role_name)
-    summary='Setup finished: edited existing channels only. No channels or categories created, renamed, moved or deleted.'
-    if skipped: summary += '\\nMissing channels/categories (left untouched): ' + ', '.join(skipped[:12])
-    await ctx.send(summary)
 
 @bot.command(name='say')
 @commands.guild_only()
@@ -492,37 +281,10 @@ async def on_command_error(ctx,error):
     log.exception('Command error',exc_info=error)
     await ctx.reply('Something went wrong. Check the bot console.')
 
-_twitch_token=None
-_twitch_expiry=0
-_twitch_was_live=False
-@tasks.loop(minutes=3)
-async def twitch_check():
-    global _twitch_token,_twitch_expiry,_twitch_was_live
-    guild=bot.get_guild(GUILD_ID)
-    if not guild: return
-    channel=discord.utils.get(guild.text_channels,name='live-notifications')
-    if not channel: return
-    try:
-        async with aiohttp.ClientSession() as session:
-            if not _twitch_token or time.time()>_twitch_expiry:
-                async with session.post('https://id.twitch.tv/oauth2/token',params={'client_id':TWITCH_CLIENT_ID,'client_secret':TWITCH_CLIENT_SECRET,'grant_type':'client_credentials'}) as response:
-                    data=await response.json()
-                    if response.status!=200: raise RuntimeError(f'Twitch token error: {response.status}')
-                    _twitch_token=data['access_token'];_twitch_expiry=time.time()+data['expires_in']-60
-            async with session.get('https://api.twitch.tv/helix/streams',params={'user_login':TWITCH_LOGIN},headers={'Client-ID':TWITCH_CLIENT_ID,'Authorization':f'Bearer {_twitch_token}'}) as response:
-                data=await response.json()
-                if response.status!=200: raise RuntimeError(f'Twitch API error: {response.status}')
-                live=bool(data.get('data'))
-                if live and not _twitch_was_live:
-                    await channel.send(f'**hika is live.**\nhttps://twitch.tv/{TWITCH_LOGIN}')
-                _twitch_was_live=live
-    except Exception: log.exception('Twitch check failed')
-
-
 # Slash commands are registered per guild so updates appear promptly.
 from discord import app_commands
 
-@bot.tree.command(name='rank',description='View your XP, level and next milestone',guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name='rank',description='View your XP, level and next milestone')
 @app_commands.describe(member='Optional member to inspect')
 async def slash_rank(interaction:discord.Interaction,member:discord.Member=None):
     target=member or interaction.user
@@ -532,16 +294,16 @@ async def slash_rank(interaction:discord.Interaction,member:discord.Member=None)
     em.set_thumbnail(url=target.display_avatar.url)
     await interaction.response.send_message(embed=em)
 
-@bot.tree.command(name='leaderboard',description='Top members by experience',guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name='leaderboard',description='Top members by experience')
 async def slash_leaderboard(interaction:discord.Interaction):
     rows=con.execute('SELECT user,xp FROM xp WHERE guild=? ORDER BY xp DESC LIMIT 10',(interaction.guild_id,)).fetchall()
     msg='\\n'.join(f'**{i}.** <@{u}> · level {level(x)} · {x:,} XP' for i,(u,x) in enumerate(rows,1)) or 'No XP earned yet.'
     await interaction.response.send_message(embed=discord.Embed(title='offhours / leaderboard',description=msg,colour=0xE5E5E5))
 
-@bot.tree.command(name='server-audit',description='Check roles, channels, and bot permissions safely',guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name='server-audit',description='Check roles, channels, and bot permissions safely')
 @app_commands.default_permissions(manage_guild=True)
 async def slash_audit(interaction:discord.Interaction):
-    if interaction.user.id!=OWNER_ID and not interaction.user.guild_permissions.manage_guild:
+    if not administrator(interaction.user) and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message('Staff only.',ephemeral=True)
     guild=interaction.guild; me=guild.me; perms=me.guild_permissions
     required={'Manage Roles':perms.manage_roles,'Manage Channels':perms.manage_channels,'Manage Messages':perms.manage_messages,'Read Message History':perms.read_message_history,'Add Reactions':perms.add_reactions,'Embed Links':perms.embed_links,'Moderate Members':perms.moderate_members}
@@ -555,26 +317,22 @@ async def slash_audit(interaction:discord.Interaction):
     lines.append('ℹ️ Discord Community setup: manual')
     em=discord.Embed(title='offhours / server audit',description='\\n'.join(lines),colour=0xE5E5E5)
     await interaction.response.send_message(embed=em,ephemeral=True)
-    logch=discord.utils.get(guild.text_channels,name='mod-logs')
-    if logch:
-        await logch.send(f'{interaction.user.mention} completed a safe server audit. Review the private results.',allowed_mentions=discord.AllowedMentions(users=[interaction.user]),silent=True)
-
-@bot.tree.command(name='test-welcome',description='Preview the member join notification',guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name='test-welcome',description='Preview the member join notification')
 @app_commands.default_permissions(manage_guild=True)
 async def slash_test_welcome(interaction:discord.Interaction):
-    if interaction.user.id!=OWNER_ID:return await interaction.response.send_message('Owner only.',ephemeral=True)
+    if not administrator(interaction.user):return await interaction.response.send_message('Owner only.',ephemeral=True)
     await join_panel(interaction.user,test=True)
     await interaction.response.send_message('Join preview posted in #welcome.',ephemeral=True)
 
-@bot.tree.command(name='colour',description='Show the starter role colour selector',guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name='colour',description='Show the starter role colour selector')
 async def slash_colour(interaction:discord.Interaction):
     await interaction.response.send_message('Choose a starter colour below (available before level 5).',view=ColourView(),ephemeral=True)
 
-@bot.tree.command(name='announce',description='Post an announcement as offhours',guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name='announce',description='Post an announcement as offhours')
 @app_commands.describe(channel='Destination channel',message='Message to post')
 @app_commands.default_permissions(manage_guild=True)
 async def slash_announce(interaction:discord.Interaction,channel:discord.TextChannel,message:str):
-    if interaction.user.id!=OWNER_ID:return await interaction.response.send_message('Owner only.',ephemeral=True)
+    if not administrator(interaction.user):return await interaction.response.send_message('Owner only.',ephemeral=True)
     if len(message)>1900:return await interaction.response.send_message('Message too long.',ephemeral=True)
     await channel.send(message,allowed_mentions=discord.AllowedMentions.none())
     await interaction.response.send_message(f'Posted in {channel.mention}.',ephemeral=True)
@@ -594,41 +352,10 @@ async def unmute(ctx,member:discord.Member):
 
 
 
-async def startup_audit(guild):
-    """Read-only startup diagnostics. Never delete messages, change roles or self-sabotage permissions."""
-    channel=discord.utils.get(guild.text_channels,name='mod-logs') or discord.utils.get(guild.text_channels,name='staff-chat')
-    if not channel: return
-    me=guild.me
-    checks={
-        'manage roles':me.guild_permissions.manage_roles,
-        'manage channels':me.guild_permissions.manage_channels,
-        'manage messages':me.guild_permissions.manage_messages,
-        'embed links':me.guild_permissions.embed_links,
-        'add reactions':me.guild_permissions.add_reactions,
-        'moderate members':me.guild_permissions.moderate_members,
-        'read message history':me.guild_permissions.read_message_history,
-    }
-    for name in ('welcome','rules','verify','general','media','post-your-setup'):
-        ch=discord.utils.get(guild.text_channels,name=name)
-        checks['#'+name]=bool(ch)
-        if ch:
-            p=ch.permissions_for(me)
-            checks['#'+name+' embeds']=p.embed_links
-            checks['#'+name+' reactions']=p.add_reactions
-    rank=discord.utils.get(guild.roles,name='regular')
-    checks['member role manageable']=bool(rank and me.top_role>rank)
-    checks['community enabled']='COMMUNITY' in [str(f).upper() for f in guild.features]
-    result='\\n'.join(('✅' if ok else '❌')+' '+name for name,ok in checks.items())
-    result+='\\n\\n*Read-only checks only; no fake member spam, real ban, or destructive permission tests.*'
-    em=discord.Embed(title='offhours / startup audit',description=result[:4000],colour=0xE5E5E5)
-    owner=guild.get_member(OWNER_ID)
-    mention=owner.mention if owner else ''
-    await channel.send(content=mention,embed=em,allowed_mentions=discord.AllowedMentions(users=[owner] if owner else []),silent=True)
-
-@bot.tree.command(name='setup-check',description='Inspect Community readiness and channel permissions',guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name='setup-check',description='Inspect Community readiness and channel permissions')
 @app_commands.default_permissions(manage_guild=True)
 async def setup_check(interaction:discord.Interaction):
-    if interaction.user.id!=OWNER_ID:
+    if not administrator(interaction.user):
         return await interaction.response.send_message('Owner only.',ephemeral=True)
     enabled='COMMUNITY' in interaction.guild.features
     rules=discord.utils.get(interaction.guild.text_channels,name='rules')
@@ -643,169 +370,17 @@ async def setup_check(interaction:discord.Interaction):
     await interaction.response.send_message(embed=em,ephemeral=True)
 
 
-# Optional audio dependencies: pip install yt-dlp PyNaCl
-# ffmpeg must be installed and available on PATH. Spotify URLs are metadata-only;
-# direct Spotify audio extraction is not supported.
+# Audio dependencies are installed and checked by the host startup process.
 import shutil
-from collections import deque
-try:
-    import yt_dlp
-except ImportError:
-    yt_dlp = None
+import yt_dlp
+from services.audio_runtime import ffmpeg_path
+from cogs.music import install as install_music
+music_service = install_music(bot, member_level, setting, set_setting)
 
-MUSIC_STATES = {}
-class MusicState:
-    def __init__(self):
-        self.queue=deque()
-        self.history=deque(maxlen=30)
-        self.current=None
-        self.loop=False
-        self.lock=asyncio.Lock()
-
-def music_state(guild_id):
-    return MUSIC_STATES.setdefault(guild_id, MusicState())
-
-def music_allowed(interaction):
-    m=interaction.user
-    return isinstance(m,discord.Member) and (m.id==OWNER_ID or member_level(interaction.guild_id,m.id)>=50)
-
-def music_voice(interaction):
-    member=interaction.user
-    return member.voice.channel if isinstance(member,discord.Member) and member.voice and member.voice.channel.name in ('general','afk') else None
-
-def extract_tracks(url):
-    if yt_dlp is None: raise RuntimeError('yt-dlp is not installed.')
-    opts={'quiet':True,'no_warnings':True,'extract_flat':'in_playlist','noplaylist':False,'playlistend':50,'skip_download':True,'default_search':'error'}
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info=ydl.extract_info(url,download=False)
-    if not info: raise RuntimeError('No playable tracks were found.')
-    entries=info.get('entries') or [info]
-    tracks=[]
-    for entry in entries:
-        if not entry:continue
-        link=entry.get('webpage_url') or entry.get('url')
-        if link and not str(link).startswith('http') and entry.get('id'):
-            link='https://www.youtube.com/watch?v='+entry['id']
-        if link and str(link).startswith('http'):
-            tracks.append({'title':entry.get('title') or 'Unknown track','url':link})
-    return tracks[:50]
-
-def resolve_audio(url):
-    with yt_dlp.YoutubeDL({'quiet':True,'no_warnings':True,'format':'bestaudio/best','noplaylist':True}) as ydl:
-        info=ydl.extract_info(url,download=False)
-    if not info or not info.get('url'):raise RuntimeError('Audio source could not be resolved.')
-    return info['url'], info.get('title','Unknown track')
-
-async def play_next(guild):
-    state=music_state(guild.id)
-    voice=guild.voice_client
-    if not voice or not voice.is_connected():return
-    async with state.lock:
-        if state.loop and state.current:
-            track=state.current
-        elif state.queue:
-            track=state.queue.popleft()
-            state.current=track
-            state.history.append(track)
-        else:
-            state.current=None
-            return
-    try:
-        audio,title=await asyncio.to_thread(resolve_audio,track['url'])
-        state.current['title']=title
-        source=discord.FFmpegPCMAudio(audio,before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',options='-vn')
-        def finished(error):
-            if error:log.error('Audio playback error: %s',error)
-            asyncio.run_coroutine_threadsafe(play_next(guild),bot.loop)
-        voice.play(source,after=finished)
-    except Exception:
-        log.exception('Failed to play music track')
-        state.loop=False
-        await play_next(guild)
-
-class MusicControls(discord.ui.View):
-    def __init__(self,guild_id):
-        super().__init__(timeout=3600)
-        self.guild_id=guild_id
-    async def gate(self,interaction):
-        if not music_allowed(interaction) or not music_voice(interaction):
-            await interaction.response.send_message('Level 50+ and general/afk voice required.',ephemeral=True)
-            return False
-        return True
-    @discord.ui.button(label='Pause / Resume',style=discord.ButtonStyle.secondary)
-    async def pause(self,interaction:discord.Interaction,button:discord.ui.Button):
-        if not await self.gate(interaction):return
-        vc=interaction.guild.voice_client
-        if not vc:return await interaction.response.send_message('Nothing playing.',ephemeral=True)
-        if vc.is_paused():vc.resume()
-        elif vc.is_playing():vc.pause()
-        await interaction.response.send_message('Playback toggled.',ephemeral=True)
-    @discord.ui.button(label='Skip',style=discord.ButtonStyle.secondary)
-    async def skip(self,interaction:discord.Interaction,button:discord.ui.Button):
-        if not await self.gate(interaction):return
-        vc=interaction.guild.voice_client
-        if vc and (vc.is_playing() or vc.is_paused()):
-            music_state(interaction.guild_id).loop=False
-            vc.stop()
-        await interaction.response.send_message('Skipped.',ephemeral=True)
-    @discord.ui.button(label='Loop',style=discord.ButtonStyle.secondary)
-    async def loop(self,interaction:discord.Interaction,button:discord.ui.Button):
-        if not await self.gate(interaction):return
-        state=music_state(interaction.guild_id)
-        state.loop=not state.loop
-        await interaction.response.send_message('Loop '+('on' if state.loop else 'off'),ephemeral=True)
-    @discord.ui.button(label='Previous',style=discord.ButtonStyle.secondary)
-    async def previous(self,interaction:discord.Interaction,button:discord.ui.Button):
-        if not await self.gate(interaction):return
-        state=music_state(interaction.guild_id)
-        if len(state.history)<2:return await interaction.response.send_message('No previous track.',ephemeral=True)
-        state.history.pop()
-        track=state.history.pop()
-        state.queue.appendleft(track)
-        state.loop=False
-        vc=interaction.guild.voice_client
-        if vc and (vc.is_playing() or vc.is_paused()):vc.stop()
-        elif vc:await play_next(interaction.guild)
-        await interaction.response.send_message('Previous track queued.',ephemeral=True)
-    @discord.ui.button(label='Stop',style=discord.ButtonStyle.danger)
-    async def stop(self,interaction:discord.Interaction,button:discord.ui.Button):
-        if not await self.gate(interaction):return
-        state=music_state(interaction.guild_id)
-        state.queue.clear();state.loop=False;state.current=None
-        if interaction.guild.voice_client:await interaction.guild.voice_client.disconnect(force=True)
-        await interaction.response.send_message('Player stopped.',ephemeral=True)
-
-@bot.tree.command(name='play',description='Play a song or playlist in general/afk voice (level 50+)',guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(link='YouTube or SoundCloud song/playlist URL')
-async def slash_music(interaction:discord.Interaction,link:str):
-    if not music_allowed(interaction):return await interaction.response.send_message('Music unlocks at level 50.',ephemeral=True)
-    channel=music_voice(interaction)
-    if not channel:return await interaction.response.send_message('Join general or afk voice first.',ephemeral=True)
-    if not re.match(r'^https://(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com|soundcloud\.com)/',link,re.I):
-        return await interaction.response.send_message('Use a YouTube or SoundCloud link. Spotify streams cannot be extracted directly.',ephemeral=True)
-    if not yt_dlp or not shutil.which('ffmpeg') or not __import__('importlib').util.find_spec('nacl'):
-        return await interaction.response.send_message('Install yt-dlp, PyNaCl and FFmpeg on the host to enable audio.',ephemeral=True)
-    await interaction.response.defer(ephemeral=True,thinking=True)
-    try:
-        tracks=await asyncio.to_thread(extract_tracks,link)
-        if not tracks:raise RuntimeError('No tracks found.')
-        vc=interaction.guild.voice_client
-        if vc and vc.channel!=channel:await vc.move_to(channel)
-        elif not vc:vc=await channel.connect()
-        state=music_state(interaction.guild_id)
-        state.queue.extend(tracks)
-        if not vc.is_playing() and not vc.is_paused():await play_next(interaction.guild)
-        em=discord.Embed(title='offhours / music',description=f'Queued **{len(tracks)}** track(s).\nUse the controls below.',colour=0xE5E5E5)
-        await channel.send(embed=em,view=MusicControls(interaction.guild_id))
-        await interaction.followup.send('Queued '+str(len(tracks))+' track(s).',ephemeral=True)
-    except Exception as exc:
-        log.exception('Music request failed')
-        await interaction.followup.send('Music failed: '+str(exc)[:300],ephemeral=True)
-
-@bot.tree.command(name='safety-check',description='Run non-destructive moderation and permission diagnostics',guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name='safety-check',description='Run non-destructive moderation and permission diagnostics')
 @app_commands.default_permissions(administrator=True)
 async def test_safety(interaction:discord.Interaction):
-    if interaction.user.id!=OWNER_ID:return await interaction.response.send_message('Owner only.',ephemeral=True)
+    if not administrator(interaction.user):return await interaction.response.send_message('Owner only.',ephemeral=True)
     await interaction.response.defer(ephemeral=True,thinking=True)
     guild=interaction.guild
     me=guild.me
@@ -832,7 +407,7 @@ async def test_safety(interaction:discord.Interaction):
     check('XP progression',xp_for_level(6)>xp_for_level(5)>xp_for_level(4))
     check('level cap',level(xp_for_level(150)+50000)==150)
     check('yt-dlp installed',bool(yt_dlp))
-    check('FFmpeg executable found',bool(shutil.which('ffmpeg')))
+    check('FFmpeg executable found',bool(ffmpeg_path()))
     check('PyNaCl voice library installed',bool(discord.opus.is_loaded() or __import__('importlib').util.find_spec('nacl')))
     failed=[label for label,passed in checks if not passed]
     report = [
@@ -849,7 +424,7 @@ async def test_safety(interaction:discord.Interaction):
         '',
         'Community enabled: '+str('COMMUNITY' in guild.features),
         'Native onboarding configured: NOT VERIFIED by this command.',
-        'Music: install yt-dlp, PyNaCl and FFmpeg on the machine hosting the bot.',
+        'Music: all audio dependencies are installed by python main.py on the host. Audible playback requires a listener’s confirmation.',
         'Spotify tracks cannot be streamed directly using a Spotify URL.',
         '',
         'If a check fails, fix the reported permission or dependency and rerun.'
@@ -871,12 +446,14 @@ class RegionSelect(discord.ui.Select):
         if not isinstance(interaction.user,discord.Member):
             return await interaction.response.send_message('Members only.',ephemeral=True)
         member=interaction.user
-        if not discord.utils.get(member.roles,name='regular'):
-            return await interaction.response.send_message('Verify first.',ephemeral=True)
-        new=discord.utils.get(interaction.guild.roles,name='region · '+self.values[0])
-        if not new:
-            return await interaction.response.send_message('Run ?setup to create region roles.',ephemeral=True)
-        old=[role for role in member.roles if role.name.startswith('region · ')]
+        if not enabled(setting,member.guild.id,'selfroles'):
+            return await interaction.response.send_message('Self-roles are disabled.',ephemeral=True)
+        selected=setting(member.guild.id,'selfrole:region:'+self.values[0],'0')
+        new=member.guild.get_role(int(selected)) if selected.isdecimal() else None
+        if not new or new.managed or new>=member.guild.me.top_role or new.permissions.administrator or new.permissions.manage_roles:
+            return await interaction.response.send_message('This region role is no longer configured. Open /region for the current menu.',ephemeral=True)
+        values={int(v) for k,v in con.execute("SELECT key,value FROM settings WHERE guild=? AND key LIKE 'selfrole:region:%'",(member.guild.id,)) if v.isdecimal()}
+        old=[role for role in member.roles if role.id in values and role.id!=new.id]
         try:
             if old: await member.remove_roles(*old,reason='Region selection')
             await member.add_roles(new,reason='Region selection')
@@ -889,11 +466,11 @@ class RegionView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(RegionSelect())
 
-@bot.tree.command(name='region',description='Choose your region role',guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name='region',description='Choose your region role')
 async def slash_region(interaction:discord.Interaction):
     await interaction.response.send_message('Choose your region.',view=RegionView(),ephemeral=True)
 
-@bot.tree.command(name='ban',description='Ban a member by user ID or username',guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name='ban',description='Ban a member by user ID or username')
 @app_commands.default_permissions(ban_members=True)
 async def slash_ban(interaction:discord.Interaction,user:str,reason:str='No reason provided'):
     if not interaction.user.guild_permissions.ban_members:
@@ -904,7 +481,7 @@ async def slash_ban(interaction:discord.Interaction,user:str,reason:str='No reas
         if not user_id.isdecimal():
             return await interaction.response.send_message('Use a member mention or numeric user ID.',ephemeral=True)
         target=await bot.fetch_user(int(user_id))
-    if target.id==OWNER_ID or target.id==interaction.user.id:
+    if target.id==interaction.guild.owner_id or target.id==interaction.user.id:
         return await interaction.response.send_message('Cannot ban that user.',ephemeral=True)
     try:
         await interaction.guild.ban(target,reason=reason[:400],delete_message_seconds=0)
@@ -914,11 +491,11 @@ async def slash_ban(interaction:discord.Interaction,user:str,reason:str='No reas
         await interaction.response.send_message('Ban failed. Check role hierarchy and permissions.',ephemeral=True)
 
 
-@bot.tree.command(name='message',description='Send a public formatted message to a selected channel',guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name='message',description='Send a public formatted message to a selected channel')
 @app_commands.describe(channel='Channel to post in',message='Discord Markdown text',title='Optional embed title',embed='Send as an embed instead of plain text')
 @app_commands.default_permissions(manage_guild=True)
 async def slash_message(interaction:discord.Interaction,channel:discord.TextChannel,message:str,title:str='',embed:bool=False):
-    if interaction.user.id!=OWNER_ID and not interaction.user.guild_permissions.manage_guild:
+    if not administrator(interaction.user) and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message('Staff only.',ephemeral=True)
     if len(message)>1900 or len(title)>200:
         return await interaction.response.send_message('Message or title too long.',ephemeral=True)
@@ -933,9 +510,50 @@ async def slash_message(interaction:discord.Interaction,channel:discord.TextChan
 
 
 from offhours_commands import install as install_offhours_commands
-install_offhours_commands(bot, OWNER_ID, GUILD_ID, con, member_xp, member_level, setting, set_setting)
+install_offhours_commands(bot, con, member_xp, member_level, setting, set_setting)
+
+from services.configuration import install as install_configuration
+configuration_service = install_configuration(bot, con, setting, set_setting)
+from cogs import panels, ai, tickets, community, moderation, levels, selfroles, invites, social, analytics, onboarding
+bot.panel_service = bot.panels_service = panels.install(bot, con, setting, set_setting)
+ai_service = ai.install(bot, con, setting, set_setting)
+ticket_service = tickets.install(bot, con, setting, set_setting)
+community_service = community.install(bot, con, setting, set_setting, member_level)
+moderation_service = moderation.install(bot, con, setting, set_setting)
+levels_service = levels.install(bot, con, setting, set_setting)
+selfroles_service = selfroles.install(bot, con, setting, set_setting)
+invites_service = invites.install(bot, con, setting, set_setting)
+social_service = social.install(bot, con, setting, set_setting)
+analytics_service = analytics.install(bot, con, setting, set_setting)
+onboarding_service = onboarding.install(bot, con, setting, set_setting)
+from cogs import safety, embeds, automation, help as help_cog
+safety.install(bot, con, setting, set_setting)
+help_cog.install(bot, con, setting, set_setting)
+embed_service=embeds.install(bot, con, setting, set_setting)
+automation_service=automation.install(bot, con, setting, set_setting)
+services = [music_service, bot.panel_service, ticket_service, community_service, moderation_service,
+            levels_service, social_service, analytics_service, automation_service]
 
 if __name__=='__main__':
-    if not TOKEN or TOKEN=='PASTE_YOUR_PRIVATE_BOT_TOKEN_HERE' or not GUILD_ID or not OWNER_ID:
-        raise SystemExit('Edit .env first: DISCORD_TOKEN, GUILD_ID and OWNER_ID are required.')
-    bot.run(TOKEN)
+    if not TOKEN or TOKEN=='PASTE_YOUR_PRIVATE_BOT_TOKEN_HERE':
+        raise SystemExit("Set DISCORD_TOKEN in the host secret environment variables.")
+    async def run_bot():
+        import signal
+        async with bot:
+            async def shutdown():
+                await bot.close()
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                try:
+                    loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
+                except NotImplementedError:
+                    pass  # Windows runner handles Ctrl+C.
+            try:
+                await bot.start(TOKEN)
+            finally:
+                for service in services:
+                    try: await service.close()
+                    except Exception: pass
+                con.commit()
+                con.close()
+    asyncio.run(run_bot())

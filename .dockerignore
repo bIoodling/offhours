@@ -1,0 +1,11 @@
+.git
+.venv
+.env
+.env.*
+!.env.example
+*.sqlite3*
+data
+outputs
+work
+__pycache__
+*.pyc
